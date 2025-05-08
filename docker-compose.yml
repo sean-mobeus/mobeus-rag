@@ -5,10 +5,10 @@ services:
     ports:
       - "8010:8010"
     volumes:
-      - ./chroma:/app/chroma # for persistent DB if needed
+      - ./chroma:/app/chroma
       - ./debug_log.jsonl:/app/debug_log.jsonl
-    environment:
-      - - OPENAI_API_KEY=${OPENAI_API_KEY}
+    env_file:
+      - .env
   frontend:
     build: ./frontend
     ports:

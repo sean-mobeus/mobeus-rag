@@ -7,6 +7,7 @@ export default function ChatUI() {
   const [chat, setChat] = useState([]);
   const [loading, setLoading] = useState(false);
   const [audioUrl, setAudioUrl] = useState(null);
+  const API_BASE = import.meta.env.VITE_API_BASE;
 
   const sendQuery = async () => {
     if (!input.trim()) return;
@@ -27,7 +28,7 @@ export default function ChatUI() {
 
     try {
       // Fetch answer
-      const res = await fetch("http://localhost:8010/query", {
+      const res = await fetch(`${API_BASE}/query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: input }),
@@ -35,7 +36,7 @@ export default function ChatUI() {
       const data = await res.json();
 
       // Fetch TTS voice
-      const voiceRes = await fetch("http://localhost:8010/speak", {
+      const voiceRes = await fetch("${API_BASE}/speak", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ query: data.answer }),
