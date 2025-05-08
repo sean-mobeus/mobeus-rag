@@ -35,6 +35,8 @@ export default function ChatUI() {
       });
       const data = await res.json();
 
+      console.log("🧠 Speaking query:", data.answer);
+
       // Fetch TTS voice
       const voiceRes = await fetch(`${API_BASE}/speak`, {
         method: "POST",

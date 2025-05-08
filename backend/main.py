@@ -1,6 +1,6 @@
 import os
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 import uuid
@@ -10,6 +10,8 @@ from config import OPENAI_API_KEY
 from pydantic import BaseModel
 from rag import query_rag
 import traceback
+import json
+
 
 app = FastAPI()
 # CORS setup
@@ -81,3 +83,26 @@ async def query_rag_endpoint(payload: QueryRequest):
 @app.get("/")
 def root():
     return {"message": "Mobeus RAG server is live"}
+
+
+@app.get("/debug", response_class=HTMLResponse)
+def get_debug_log():
+    log_path = os.path.join(os.getcwd(), "debug_log.jsonl")
+    if not os.path.exists(log_path):
+        return "<h2>No debug log found.</h2>"
+
+    html = ["<h1>Mobeus Assistant — Debug Log</h1>"]
+    with open(log_path, "r") as f:
+        lines = f.readlines()
+
+    for line in reversed(lines[-50:]):  # show last 50
+        try:
+            entry = json.loads(line)
+            html.append(f"<h2>{entry['timestamp']}</h2>")
+            html.append(f"<strong>Query:</strong> {entry['query']}<br>")
+            html.append(f"<strong>Answer:</strong><pre>{entry['answer']}</pre>")
+            html.append(f"<strong>Chunks:</strong><pre>{json.dumps(entry['top_chunks'], indent=2)}</pre>")
+        except Exception as e:
+            html.append(f"<p>Error parsing line: {e}</p>")
+
+    return HTMLResponse(content="".join(html), status_code=200)
