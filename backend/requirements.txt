@@ -3,3 +3,5 @@ uvicorn
 openai
 python-multipart
 chromadb
+tiktoken
+python-docx

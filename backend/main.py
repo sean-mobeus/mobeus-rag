@@ -1,6 +1,6 @@
 import os
 from fastapi import FastAPI, UploadFile, File
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 import uuid
@@ -50,22 +50,23 @@ async def voice_query(file: UploadFile = File(...)):
 
 @app.post("/speak")
 def speak_text(payload: QueryRequest):
-    speech_file_path = f"temp_speech_{uuid.uuid4().hex}.mp3"
+    speech_file_path = "response.mp3"
+    try:
+        print(f"🗣 Generating TTS for: {payload.query}")
+        speech_response = openai_client.audio.speech.create(
+            model="tts-1",
+            voice="nova",
+            input=payload.query
+        )
+        print(f"✅ TTS call succeeded. Writing to {speech_file_path}")
+        with open(speech_file_path, "wb") as f:
+            f.write(speech_response.content)
 
-    speech_response = openai_client.audio.speech.create(
-        model="tts-1",
-        voice="nova",  # Options: alloy, echo, fable, onyx, nova, shimmer
-        input=payload.query
-    )
+        return FileResponse(speech_file_path, media_type="audio/mpeg")
 
-    with open(speech_file_path, "wb") as f:
-        f.write(speech_response.content)
-
-    return StreamingResponse(
-        open(speech_file_path, "rb"),
-        media_type="audio/mpeg",
-        background=BackgroundTask(lambda: os.remove(speech_file_path)),
-    )
+    except Exception as e:
+        print(f"❌ TTS error: {e}")
+        return {"error": str(e)}
 
 @app.post("/query")
 async def query_rag_endpoint(payload: QueryRequest):

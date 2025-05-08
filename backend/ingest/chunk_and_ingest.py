@@ -1,11 +1,13 @@
+import sys
 import os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import json
 import tiktoken
 from pathlib import Path
 from docx import Document
 from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-from backend.config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL
+from config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL
 
 # === CONFIG ===
 DOCS_DIR = Path("docs")

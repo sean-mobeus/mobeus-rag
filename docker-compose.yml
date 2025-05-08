@@ -5,6 +5,7 @@ services:
     ports:
       - "8010:8010"
     volumes:
+      - ./docs:/app/docs
       - ./chroma:/app/chroma
       - ./debug_log.jsonl:/app/debug_log.jsonl
     env_file:
