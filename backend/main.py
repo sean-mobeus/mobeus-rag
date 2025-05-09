@@ -1,16 +1,20 @@
 import os
-from fastapi import FastAPI, UploadFile, File
+from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.background import BackgroundTask
 import uuid
 import tempfile
 from openai import OpenAI
-from config import OPENAI_API_KEY
+from config import OPENAI_API_KEY, DEBUG_LOG_PATH
 from pydantic import BaseModel
 from rag import query_rag
 import traceback
 import json
+from typing import Optional
+from io import BytesIO
+
+
 
 
 app = FastAPI()
@@ -25,6 +29,9 @@ app.add_middleware(
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
+class SpeakRequest(BaseModel):
+    text: Optional[str] = None
+    query: Optional[str] = None
 
 class QueryRequest(BaseModel):
     query: str
@@ -51,20 +58,25 @@ async def voice_query(file: UploadFile = File(...)):
     }
 
 @app.post("/speak")
-def speak_text(payload: QueryRequest):
-    speech_file_path = "response.mp3"
+async def speak_text(payload: SpeakRequest):
+    tts_input = payload.text or payload.query
+    if not tts_input:
+        raise HTTPException(status_code=422, detail="Missing 'text' or 'query' in payload")
+
     try:
-        print(f"🗣 Generating TTS for: {payload.query}")
+        print(f"🗣 Generating TTS for: {tts_input}")
         speech_response = openai_client.audio.speech.create(
             model="tts-1",
             voice="nova",
-            input=payload.query
+            input=tts_input
         )
-        print(f"✅ TTS call succeeded. Writing to {speech_file_path}")
-        with open(speech_file_path, "wb") as f:
-            f.write(speech_response.content)
+        mp3_stream = BytesIO(speech_response.read())
+        print(f"✅ TTS generated successfully")
+        return StreamingResponse(mp3_stream, media_type="audio/mpeg")
 
-        return FileResponse(speech_file_path, media_type="audio/mpeg")
+    except Exception as e:
+        print(f"❌ TTS error: {e}")
+        return {"error": str(e)}
 
     except Exception as e:
         print(f"❌ TTS error: {e}")
@@ -87,12 +99,11 @@ def root():
 
 @app.get("/debug", response_class=HTMLResponse)
 def get_debug_log():
-    log_path = os.path.join(os.getcwd(), "debug_log.jsonl")
-    if not os.path.exists(log_path):
+    if not os.path.exists(DEBUG_LOG_PATH):
         return "<h2>No debug log found.</h2>"
 
     html = ["<h1>Mobeus Assistant — Debug Log</h1>"]
-    with open(log_path, "r") as f:
+    with open(DEBUG_LOG_PATH, "r") as f:
         lines = f.readlines()
 
     for line in reversed(lines[-50:]):  # show last 50

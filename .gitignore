@@ -2,3 +2,4 @@ __pycache__/
 .env
 chroma/
 debug_log.jsonl
+rag_debug.jsonl
