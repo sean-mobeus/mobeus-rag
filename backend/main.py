@@ -36,8 +36,6 @@ class SpeakRequest(BaseModel):
 class QueryRequest(BaseModel):
     query: str
 
-class QueryRequest(BaseModel):
-    query: str
 
 @app.post("/voice-query")
 async def voice_query(file: UploadFile = File(...)):
