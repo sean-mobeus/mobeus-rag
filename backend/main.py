@@ -13,8 +13,7 @@ import traceback
 import json
 from typing import Optional
 from io import BytesIO
-
-
+from routes import speak_stream 
 
 
 app = FastAPI()
@@ -26,6 +25,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(speak_stream.router)
+
+
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -37,7 +40,7 @@ class QueryRequest(BaseModel):
     query: str
 
 
-@app.post("/voice-query")
+@app.post("/api/voice-query")
 async def voice_query(file: UploadFile = File(...)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
         tmp.write(await file.read())
@@ -55,7 +58,7 @@ async def voice_query(file: UploadFile = File(...)):
         **response
     }
 
-@app.post("/speak")
+@app.post("/api/speak")
 async def speak_text(payload: SpeakRequest):
     tts_input = payload.text or payload.query
     if not tts_input:
@@ -80,7 +83,7 @@ async def speak_text(payload: SpeakRequest):
         print(f"❌ TTS error: {e}")
         return {"error": str(e)}
 
-@app.post("/query")
+@app.post("/api/query")
 async def query_rag_endpoint(payload: QueryRequest):
     try:
         response = query_rag(payload.query)

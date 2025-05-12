@@ -1,13 +1,16 @@
 //frontend/src/components/ChatUI.jsx
 import { useState } from "react";
 import MicButton from "./MicButton";
+import StreamedAudioPlayer from "./StreamedAudioPlayer";
 
 export default function ChatUI() {
   const [input, setInput] = useState("");
   const [chat, setChat] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [audioUrl, setAudioUrl] = useState(null);
+  const [streamText, setStreamText] = useState(null);
   const API_BASE = import.meta.env.VITE_API_BASE;
+
+  console.log("✅ VITE_API_BASE:", import.meta.env.VITE_API_BASE);
 
   const sendQuery = async () => {
     if (!input.trim()) return;
@@ -37,14 +40,8 @@ export default function ChatUI() {
 
       console.log("🧠 Speaking query:", data.answer);
 
-      // Fetch TTS voice
-      const voiceRes = await fetch(`${API_BASE}/speak`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: data.answer }),
-      });
-      const blob = await voiceRes.blob();
-      setAudioUrl(URL.createObjectURL(blob));
+      // Trigger TTS stream
+      setStreamText(data.answer);
 
       // Replace the thinking message with the real assistant message
       setChat((prev) => [
@@ -128,11 +125,7 @@ export default function ChatUI() {
         </div>
       </div>
 
-      {audioUrl && (
-        <div className="mt-4">
-          <audio controls src={audioUrl} autoPlay />
-        </div>
-      )}
+      {streamText && <StreamedAudioPlayer text={streamText} voice="nova" />}
     </div>
   );
 }
