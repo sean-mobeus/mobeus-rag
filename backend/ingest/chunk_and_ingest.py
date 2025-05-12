@@ -79,7 +79,11 @@ def embed_and_store(chunks):
     client = PersistentClient(path=CHROMA_DB_DIR)
 
     print(f"🧹 Deleting old collection (if exists)...")
-    client.delete_collection("mobeus_knowledge")
+    try:
+        client.delete_collection("mobeus_knowledge")
+    except Exception as e:
+        print(f"⚠️ Skipping delete: {e}")
+
     collection = client.create_collection(
         name="mobeus_knowledge",
         embedding_function=OpenAIEmbeddingFunction(
@@ -105,10 +109,14 @@ def embed_and_store(chunks):
 if __name__ == "__main__":
     print("📂 Reading and chunking documents...")
     all_chunks = []
+    print("📁 Looking in:", DOCS_DIR)
+    print("📄 Files found:", list(DOCS_DIR.glob("*")))
+
     for doc_path in DOCS_DIR.glob("*.docx"):
         chunks = extract_clean_chunks(doc_path)
         print(f"➡️  {doc_path.name}: {len(chunks)} chunks")
         all_chunks.extend(chunks)
 
+    print(f"🧠 Total chunks: {len(all_chunks)}")
     embed_and_store(all_chunks)
     print("🎉 Ingestion complete.")

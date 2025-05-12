@@ -97,21 +97,47 @@ def root():
 
 @app.get("/debug", response_class=HTMLResponse)
 def get_debug_log():
-    if not os.path.exists(DEBUG_LOG_PATH):
-        return "<h2>No debug log found.</h2>"
+    log_path = os.path.join(os.getcwd(), "rag_debug_fresh.jsonl")
+    if not os.path.exists(log_path):
+        return HTMLResponse("<h2>No log file found.</h2>", status_code=200)
 
-    html = ["<h1>Mobeus Assistant — Debug Log</h1>"]
-    with open(DEBUG_LOG_PATH, "r") as f:
-        lines = f.readlines()
+    html = [
+        "<head><title>Mobeus Assistant — Debug Log</title><style>",
+        "body{font-family:sans-serif;padding:2rem;background:#f9f9f9}",
+        "h1{margin-bottom:1rem}pre{background:#eee;padding:1rem;border-radius:6px;white-space:pre-wrap;word-break:break-word;overflow-x:auto;max-width:100%;display:block}",
+        "details{border:1px solid #ccc;border-radius:8px;padding:1rem;background:#fff}",
+        "details summary{font-weight:bold;font-size:1rem;cursor:pointer;margin-bottom:0.5rem}",
+        "details[open] summary::after{content:' ▲'}details summary::after{content:' ▼'}",
+        "</style></head><body><h1>Mobeus Assistant — Debug Log</h1>"
+    ]
 
-    for line in reversed(lines[-50:]):  # show last 50
+    try:
+        with open(log_path, "r") as f:
+            lines = reversed(f.readlines()[-50:])
+    except Exception:
+        return HTMLResponse("<h2>Error reading log file.</h2>", status_code=500)
+
+    for line in lines:
         try:
             entry = json.loads(line)
-            html.append(f"<h2>{entry['timestamp']}</h2>")
-            html.append(f"<strong>Query:</strong> {entry['query']}<br>")
-            html.append(f"<strong>Answer:</strong><pre>{entry['answer']}</pre>")
-            html.append(f"<strong>Chunks:</strong><pre>{json.dumps(entry['top_chunks'], indent=2)}</pre>")
+            ts = entry.get("timestamp", "")
+            q = entry.get("query", "")
+            a = entry.get("answer", "")
+            timings = entry.get("timings", {})
+            chunks = entry.get("top_chunks", [])
+            html.append(f"<details><summary><strong>{ts}</strong> — <em>{q}</em></summary><div>")
+            html.append(f"<strong>Answer:</strong><br><pre>{a}</pre>")
+            if timings:
+                gpt_time = timings.get("gpt", 0)
+                color = "red" if gpt_time > 5.0 else "green"
+                html.append(f"<strong>Timings (sec):</strong><pre style='color:{color}'>" + json.dumps(timings, indent=2) + "</pre>")
+            else:
+                html.append("<pre><em>No timing data available</em></pre>")
+            html.append("<strong>Top Chunks:</strong><br><pre>" + json.dumps(chunks, indent=2) + "</pre>")
+            html.append("<details><summary style='margin-top:1rem'>🔍 RAW JSON</summary><pre>" + line + "</pre></details>")
+            html.append("</div></details>")
         except Exception as e:
             html.append(f"<p>Error parsing line: {e}</p>")
 
+    html.append("</body>")
     return HTMLResponse(content="".join(html), status_code=200)

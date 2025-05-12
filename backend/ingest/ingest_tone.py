@@ -1,12 +1,12 @@
 # ingest_tone.py
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 import json
 from pathlib import Path
 from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
-from backend.config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL
+from config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL
 
 # === CONFIG ===
 JSONL_PATH = Path("docs/tone_shaper.jsonl")

@@ -51,7 +51,7 @@
   //   putenv("MOBEUS_DEBUG_LOG=" . $env['MOBEUS_DEBUG_LOG']);
   // }
 
-  $log_file = realpath(__DIR__ . '/../rag_debug.jsonl');
+  $log_file = '/var/www/html/rag_debug.jsonl';
   echo "<p><strong>Reading from:</strong> $log_file</p>";
 
   $lines = file($log_file) or die("<h2>No log file found.</h2>");
