@@ -100,7 +100,8 @@ def root():
 
 @app.get("/debug", response_class=HTMLResponse)
 def get_debug_log():
-    log_path = os.path.join(os.getcwd(), "rag_debug_fresh.jsonl")
+    # Use the configured debug log path (consistent with DEBUG_LOG_PATH)
+    log_path = DEBUG_LOG_PATH
     if not os.path.exists(log_path):
         return HTMLResponse("<h2>No log file found.</h2>", status_code=200)
 
