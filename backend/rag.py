@@ -5,6 +5,7 @@ from openai import OpenAI
 from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL, DEBUG_LOG_PATH
+from agents.tone_engine import get_tone_shaping_chunks
 
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
@@ -13,18 +14,6 @@ collection = chroma_client.get_or_create_collection(
     name="mobeus_knowledge",
     embedding_function=OpenAIEmbeddingFunction(api_key=OPENAI_API_KEY, model_name=EMBED_MODEL)
 )
-
-def get_tone_shaping_chunks(prompt_text: str, top_k=3):
-    client = PersistentClient(path=CHROMA_DB_DIR)
-    collection = client.get_collection(
-        name="conversation_tone",
-        embedding_function=OpenAIEmbeddingFunction(
-            api_key=OPENAI_API_KEY,
-            model_name=EMBED_MODEL
-        )
-    )
-    results = collection.query(query_texts=[prompt_text], n_results=top_k)
-    return results['documents'][0] if results and results['documents'] else []
 
 def log_debug(query, chunks, answer, timings):
     with open(DEBUG_LOG_PATH, "a") as f:
@@ -88,3 +77,22 @@ Answer:"""
         "answer": answer,
         "sources": sources
     }
+ 
+async def retrieve_documents(query: str):
+    """
+    Retrieve top knowledge-base chunks for the given query.
+    Returns a list of dicts, each containing 'text' and any metadata fields.
+    """
+    # Query ChromaDB for the top results
+    results = collection.query(query_texts=[query], n_results=5)
+    texts = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    # Combine text and metadata into chunk dicts
+    chunks = []
+    for idx, text in enumerate(texts):
+        meta = metadatas[idx] if idx < len(metadatas) else {}
+        chunk = {"text": text}
+        if isinstance(meta, dict):
+            chunk.update(meta)
+        chunks.append(chunk)
+    return chunks

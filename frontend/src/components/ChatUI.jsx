@@ -1,7 +1,7 @@
 //frontend/src/components/ChatUI.jsx
 import { useState } from "react";
 import MicButton from "./MicButton";
-import StreamedAudioPlayer from "./StreamedAudioPlayer";
+import OptimizedAudioPlayerWrapper from "./OptimizedAudioPlayerWrapper";
 
 export default function ChatUI() {
   const [input, setInput] = useState("");
@@ -9,8 +9,6 @@ export default function ChatUI() {
   const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState(null);
   const API_BASE = import.meta.env.VITE_API_BASE;
-
-  console.log("✅ VITE_API_BASE:", import.meta.env.VITE_API_BASE);
 
   const sendQuery = async () => {
     if (!input.trim()) return;
@@ -30,15 +28,25 @@ export default function ChatUI() {
     setInput("");
 
     try {
-      // Fetch answer
+      // Record query start time for performance tracking
+      const queryStartTime = performance.now();
+
+      // Fetch answer - add a timeout parameter to ensure quicker response
       const res = await fetch(`${API_BASE}/query`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "X-Priority": "high", // Signal high priority (if your backend supports this)
+        },
         body: JSON.stringify({ query: input }),
       });
-      const data = await res.json();
 
-      console.log("🧠 Speaking query:", data.answer);
+      const data = await res.json();
+      const queryTime = ((performance.now() - queryStartTime) / 1000).toFixed(
+        2
+      );
+
+      console.log(`🧠 Query completed in ${queryTime}s:`, data.answer);
 
       // Trigger TTS stream
       setStreamText(data.answer);
@@ -125,7 +133,9 @@ export default function ChatUI() {
         </div>
       </div>
 
-      {streamText && <StreamedAudioPlayer text={streamText} voice="nova" />}
+      {streamText && (
+        <OptimizedAudioPlayerWrapper text={streamText} voice="nova" />
+      )}
     </div>
   );
 }

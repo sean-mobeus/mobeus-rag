@@ -1,32 +1,74 @@
-import { useEffect, useRef } from "react";
+export default class StreamedAudioPlayer {
+  constructor() {
+    this.audioElement = new Audio();
+    this.mediaSource = new MediaSource();
+    this.sourceBuffer = null;
+    this.mimeCodec = "audio/webm; codecs=opus";
+    this.audioElement.src = URL.createObjectURL(this.mediaSource);
+  }
 
-const StreamedAudioPlayer = ({ text, voice = "nova" }) => {
-  const audioRef = useRef(null);
+  get element() {
+    return this.audioElement;
+  }
 
-  useEffect(() => {
-    const playAudio = async () => {
-      const res = await fetch(
-        `/api/speak-stream?text=${encodeURIComponent(text)}&voice=${voice}`
-      );
-      const reader = res.body.getReader();
-      const chunks = [];
+  async playStream(url) {
+    return new Promise((resolve, reject) => {
+      this.mediaSource.addEventListener("sourceopen", async () => {
+        try {
+          this.sourceBuffer = this.mediaSource.addSourceBuffer(this.mimeCodec);
+          this.sourceBuffer.mode = "sequence";
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        chunks.push(value);
-      }
+          const res = await fetch(url);
+          const reader = res.body.getReader();
 
-      const blob = new Blob(chunks, { type: "audio/ogg" });
-      const audioUrl = URL.createObjectURL(blob);
-      audioRef.current.src = audioUrl;
-      audioRef.current.play();
-    };
+          let hasAppended = false;
 
-    if (text) playAudio();
-  }, [text, voice]);
+          const process = async () => {
+            while (true) {
+              const { value, done } = await reader.read();
+              if (done) break;
 
-  return <audio ref={audioRef} controls />;
-};
+              if (
+                this.sourceBuffer &&
+                value &&
+                this.mediaSource.readyState === "open"
+              ) {
+                await this.appendBufferAsync(value);
 
-export default StreamedAudioPlayer;
+                // 👇 Play after first buffer is safely added
+                if (!hasAppended) {
+                  this.audioElement.play().catch(reject);
+                  hasAppended = true;
+                }
+              }
+            }
+
+            if (this.mediaSource.readyState === "open") {
+              this.mediaSource.endOfStream();
+            }
+
+            resolve();
+          };
+
+          process().catch(reject);
+        } catch (err) {
+          reject(err);
+        }
+      });
+    });
+  }
+
+  appendBufferAsync(chunk) {
+    return new Promise((resolve) => {
+      this.sourceBuffer.addEventListener("updateend", () => resolve(), {
+        once: true,
+      });
+      this.sourceBuffer.appendBuffer(chunk);
+    });
+  }
+
+  stop() {
+    this.audioElement.pause();
+    this.audioElement.currentTime = 0;
+  }
+}
