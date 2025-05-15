@@ -100,7 +100,7 @@ def root():
     return {"message": "Mobeus RAG server is live"}
 
 
-@app.get("/debug", response_class=HTMLResponse)
+@app.get("/api/debug", response_class=HTMLResponse)
 def get_debug_log():
     # Use the configured debug log path (consistent with DEBUG_LOG_PATH)
     log_path = DEBUG_LOG_PATH
