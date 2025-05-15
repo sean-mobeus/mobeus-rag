@@ -1,5 +1,6 @@
 import os
 import json
+import shutil
 from fastapi import APIRouter
 from fastapi.responses import HTMLResponse
 from config import DEBUG_LOG_PATH
@@ -8,9 +9,39 @@ router = APIRouter()
 
 @router.get("/debug", response_class=HTMLResponse)
 def get_debug_log():
-    log_path = DEBUG_LOG_PATH
+    log_path = os.getenv("MOBEUS_DEBUG_LOG", "rag_debug_fresh.jsonl")
+
+    # If it’s a directory instead of a file, delete it
+    if os.path.isdir(log_path):
+        shutil.rmtree(log_path)
+
+    # If it doesn't exist, create a blank log file
     if not os.path.exists(log_path):
-        return HTMLResponse("<h2>No log file found.</h2>", status_code=200)
+        with open(log_path, "w") as f:
+            f.write("")
+        return HTMLResponse("<h2>Log file was missing. Created new empty log file.</h2>", status_code=200)
+
+    try:
+        with open(log_path, "r") as f:
+            lines = f.readlines()
+            if not lines:
+                return HTMLResponse("<h2>Log file is empty.</h2>", status_code=200)
+
+        html = ["<h1>Mobeus Debug Log</h1>"]
+        for line in reversed(lines[-50:]):
+            try:
+                entry = json.loads(line)
+                ts = entry.get("timestamp", "")
+                query = entry.get("query", "")
+                answer = entry.get("answer", "")
+                html.append(f"<div><strong>{ts}</strong>: <em>{query}</em><br><pre>{answer}</pre></div><hr>")
+            except json.JSONDecodeError:
+                html.append("<div><em>Malformed log entry</em></div><hr>")
+
+        return HTMLResponse("".join(html), status_code=200)
+
+    except Exception as e:
+        return HTMLResponse(f"<h2>Error reading log file: {e}</h2>", status_code=500)
 
     html = [
         "<head><title>Mobeus Assistant — Debug Log</title><style>",
