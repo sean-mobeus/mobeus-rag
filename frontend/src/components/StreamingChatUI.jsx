@@ -1,3 +1,4 @@
+import React from "react";
 import { useState, useEffect, useRef } from "react";
 import MicButton from "./MicButton";
 import OptimizedAudioPlayerWrapper from "./OptimizedAudioPlayerWrapper";

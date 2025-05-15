@@ -1,4 +1,5 @@
 // OptimizedAudioPlayerWrapper.jsx
+import React from "react";
 import { useEffect, useRef, useState } from "react";
 import OptimizedAudioPlayer from "./OptimizedAudioPlayer";
 

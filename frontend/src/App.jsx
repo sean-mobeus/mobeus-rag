@@ -1,4 +1,5 @@
 // frontend/src/App.jsx
+import React from "react";
 import "./App.css";
 import StreamingChatUI from "./components/StreamingChatUI";
 
