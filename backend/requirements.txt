@@ -6,3 +6,4 @@ chromadb
 tiktoken
 python-docx
 httpx
+psycopg2-binary  # PostgreSQL driver for session and persistent memory

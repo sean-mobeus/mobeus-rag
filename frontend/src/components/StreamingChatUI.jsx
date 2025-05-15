@@ -1,20 +1,21 @@
-//frontend/src/components/StreamingChatUI.jsx
 import { useState, useEffect, useRef } from "react";
 import MicButton from "./MicButton";
 import OptimizedAudioPlayerWrapper from "./OptimizedAudioPlayerWrapper";
 
 export default function StreamingChatUI() {
-  const [input, setInput] = useState("");
   const [chat, setChat] = useState([]);
-  const [loading, setLoading] = useState(false);
   const [streamText, setStreamText] = useState(null);
   const [streamingText, setStreamingText] = useState("");
   const [metrics, setMetrics] = useState({});
   const API_BASE = import.meta.env.VITE_API_BASE;
   const eventSourceRef = useRef(null);
+  const recognizerRef = useRef(null);
+  const isLoopingRef = useRef(false);
 
-  // Clean up event source on unmount
   useEffect(() => {
+    if (!localStorage.getItem("uuid")) {
+      localStorage.setItem("uuid", crypto.randomUUID());
+    }
     return () => {
       if (eventSourceRef.current) {
         eventSourceRef.current.close();
@@ -22,67 +23,52 @@ export default function StreamingChatUI() {
     };
   }, []);
 
-  const sendStreamingQuery = async () => {
+  const sendStreamingQuery = async (input) => {
     if (!input.trim()) return;
-    setLoading(true);
 
-    // Add user's question
-    const userMessage = { role: "user", text: input };
-    setChat((prev) => [...prev, userMessage]);
-
-    // Add thinking placeholder with streaming indicator
-    const thinkingMsg = {
-      role: "system",
-      text: "",
-      isStreaming: true,
-    };
-    setChat((prev) => [...prev, thinkingMsg]);
-    setInput("");
+    setChat((prev) => [...prev, { role: "user", text: input }]);
+    setChat((prev) => [
+      ...prev,
+      { role: "system", text: "", isStreaming: true },
+    ]);
     setStreamingText("");
 
-    // Close any existing event source
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
     }
 
     try {
-      // Start streaming request
       const res = await fetch(`${API_BASE}/stream-query`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: input }),
+        body: JSON.stringify({
+          query: input,
+          uuid: localStorage.getItem("uuid"),
+        }),
       });
 
-      // Create reader from the streaming response
       const reader = res.body.getReader();
       let decoder = new TextDecoder();
       let buffer = "";
       let fullResponse = "";
       let isFirstChunk = true;
 
-      // Process the stream
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
 
-        // Decode the chunk
         buffer += decoder.decode(value, { stream: true });
-
-        // Process complete SSE messages
         const lines = buffer.split("\n\n");
-        buffer = lines.pop() || ""; // Keep any incomplete data in the buffer
+        buffer = lines.pop() || "";
 
         for (const line of lines) {
           if (line.startsWith("data: ")) {
             try {
               const data = JSON.parse(line.substring(6));
 
-              // Handle text chunk
               if (data.chunk) {
                 fullResponse += data.chunk;
                 setStreamingText(fullResponse);
-
-                // Update streaming message in chat
                 setChat((prev) =>
                   prev.map((msg, i) =>
                     i === prev.length - 1 && msg.isStreaming
@@ -91,27 +77,22 @@ export default function StreamingChatUI() {
                   )
                 );
 
-                // Start TTS on first substantial chunk (at least 15 chars)
                 if (isFirstChunk && fullResponse.length > 20) {
                   isFirstChunk = false;
-                  // Only send the first sentence for immediate TTS
+
+                  // Temporarily pause mic while speaking
+                  recognizerRef.current?.stop();
+
                   const firstSentence = fullResponse.split(".")[0] + ".";
                   setStreamText(firstSentence);
-                  console.log(
-                    "Starting TTS with initial chunk:",
-                    firstSentence
-                  );
                 }
 
-                // Update metrics
                 if (data.timings) {
                   setMetrics(data.timings);
                 }
               }
 
-              // Handle completion
               if (data.done) {
-                // Update final message in chat
                 setChat((prev) =>
                   prev.map((msg, i) =>
                     i === prev.length - 1 && msg.isStreaming
@@ -119,13 +100,14 @@ export default function StreamingChatUI() {
                       : msg
                   )
                 );
-
-                // Use the full response for TTS
                 setStreamText(fullResponse);
-                console.log(
-                  "Streaming complete, final response:",
-                  fullResponse
-                );
+
+                // Resume mic after estimated speech duration
+                setTimeout(() => {
+                  if (isLoopingRef.current && recognizerRef.current) {
+                    recognizerRef.current.start();
+                  }
+                }, Math.max(2000, fullResponse.length * 50)); // crude estimation
               }
             } catch (error) {
               console.error("Error parsing SSE message:", error);
@@ -135,43 +117,40 @@ export default function StreamingChatUI() {
       }
     } catch (err) {
       console.error("Error in streaming:", err);
-      // Update error state in chat
-      setChat((prev) =>
-        prev.map((msg, i) =>
-          i === prev.length - 1 && msg.isStreaming
-            ? {
-                ...msg,
-                text: "Error fetching response. Please try again.",
-                isStreaming: false,
-              }
-            : msg
-        )
-      );
-    } finally {
-      setLoading(false);
     }
   };
 
   return (
-    <div className="p-4 w-full max-w-2xl mx-auto">
-      <h1 className="text-2xl font-bold mb-4">Mobeus Assistant (Streaming)</h1>
-      <div className="space-y-2 mb-4">
+    <div className="flex flex-col items-center justify-center min-h-screen bg-black text-white">
+      <h1 className="text-3xl font-bold mb-6">Mobeus Assistant</h1>
+
+      <div className="mb-6">
+        <MicButton
+          onResult={(text) => {
+            sendStreamingQuery(text);
+          }}
+          setRecognizerRef={(ref) => (recognizerRef.current = ref)}
+          isLoopingRef={isLoopingRef}
+        />
+      </div>
+
+      <div className="w-full max-w-2xl px-4 space-y-2">
         {chat.map((msg, idx) => (
           <div
             key={idx}
-            className={`my-3 flex ${
+            className={`flex ${
               msg.role === "user" ? "justify-end" : "justify-start"
             }`}
           >
             <div
-              className={`px-4 py-3 max-w-[80%] rounded-2xl shadow ${
+              className={`px-4 py-3 rounded-2xl shadow max-w-[80%] whitespace-pre-line ${
                 msg.role === "user"
                   ? "bg-blue-600 text-white"
                   : "bg-gray-200 text-gray-800"
               }`}
             >
               <strong>{msg.role === "user" ? "You:" : "Mobeus:"}</strong>
-              <p className="mt-1 whitespace-pre-line">
+              <p className="mt-1">
                 {msg.text}
                 {msg.isStreaming && (
                   <span className="inline-block animate-bounce">...</span>
@@ -186,38 +165,6 @@ export default function StreamingChatUI() {
             </div>
           </div>
         ))}
-      </div>
-
-      <div className="flex flex-col items-center w-full mt-6">
-        <div className="flex gap-2 w-full max-w-[80%]">
-          <textarea
-            className="border p-3 flex-1 rounded text-base resize-none w-full min-h-[7rem] h-[7rem]"
-            placeholder="Ask something..."
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                sendStreamingQuery();
-              }
-            }}
-          />
-          <div className="flex flex-col gap-2">
-            <MicButton
-              onResult={(text) => {
-                setInput(text);
-                setTimeout(sendStreamingQuery, 100);
-              }}
-            />
-            <button
-              onClick={sendStreamingQuery}
-              disabled={loading}
-              className="bg-blue-600 text-white px-4 py-2 rounded"
-            >
-              {loading ? "..." : "Send"}
-            </button>
-          </div>
-        </div>
       </div>
 
       {streamText && (

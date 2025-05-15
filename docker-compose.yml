@@ -11,6 +11,10 @@ services:
       - ./rag_debug_fresh.jsonl:/app/rag_debug_fresh.jsonl
     env_file:
       - .env
+    environment:
+      POSTGRES_HOST: postgres
+    depends_on:
+      - postgres
   frontend:
     build: ./frontend
     ports:
@@ -34,3 +38,19 @@ services:
     volumes:
       - ./php:/var/www/html/php
       - ./rag_debug_fresh.jsonl:/var/www/html/rag_debug.jsonl
+
+  # Add PostgreSQL service for session and user memory storage
+  postgres:
+    image: postgres:15-alpine
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: mobeus
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+volumes:
+  postgres_data:
