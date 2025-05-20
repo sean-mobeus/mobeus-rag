@@ -34,6 +34,12 @@ class OpenAIRealtimeClient extends EventEmitter {
 
     // Our backend base URL
     this.backendUrl = window.location.origin;
+
+    // Track audio transcript across events
+    this.accumulatedAudioTranscript = "";
+    this.currentAssistantItemId = null;
+    // Track streaming text parts for assistant messages
+    this.accumulatedContentParts = new Map();
   }
 
   /**
@@ -268,10 +274,48 @@ class OpenAIRealtimeClient extends EventEmitter {
     switch (type) {
       case "session.created":
         this.emit("session.created", event.session);
+
+        // Send initial greeting when session is created
+        setTimeout(() => {
+          this.sendEvent({
+            type: "response.create",
+            response: {
+              modalities: ["text", "audio"],
+              instructions:
+                "Say: Hello, I'm Mobeus Assistant. How can I help you today?",
+            },
+          });
+        }, 500);
         break;
 
       case "conversation.item.created":
         this.emit("conversation.item.created", event.item);
+
+        // New: Check if this is a message from the assistant
+        if (
+          event.item &&
+          event.item.type === "message" &&
+          event.item.role === "assistant"
+        ) {
+          // Extract and concatenate all text segments from content
+          let text = "";
+          if (Array.isArray(event.item.content)) {
+            for (const contentItem of event.item.content) {
+              if (contentItem.type === "text") {
+                text += contentItem.text || "";
+              }
+            }
+          }
+
+          if (text) {
+            console.log(`Assistant message created: "${text}"`);
+            this.emit("message.completed", {
+              role: "assistant",
+              text,
+              item: event.item,
+            });
+          }
+        }
         break;
 
       case "conversation.item.completed":
@@ -283,7 +327,13 @@ class OpenAIRealtimeClient extends EventEmitter {
         break;
 
       case "response.text.done":
+        // Emit streaming text done event
         this.emit("response.text.done", event.text);
+        // Emit completed assistant message for UI
+        this.emit("message.completed", {
+          role: "assistant",
+          text: event.text,
+        });
         break;
 
       case "response.audio.delta":
@@ -312,8 +362,52 @@ class OpenAIRealtimeClient extends EventEmitter {
         break;
 
       case "error":
+        // Generic error event
         this.emit("error", event.error);
         break;
+      case "rate_limit":
+        // Handle rate-limit signals from the Realtime API
+        console.error("OpenAI Realtime rate limit reached:", event);
+        this.emit("error", new Error("Rate limit exceeded, please try again later."));
+        break;
+
+      // Handle streaming content parts for assistant messages
+      case "response.content_part.done": {
+        const { item_id, content } = event;
+        if (content && content.type === "text") {
+          const prev = this.accumulatedContentParts.get(item_id) || "";
+          this.accumulatedContentParts.set(item_id, prev + (content.text || ""));
+        }
+        break;
+      }
+      // Handle final output item for assistant messages or other items
+      case "response.output_item.done": {
+        // DEBUG: inspect the full item payload
+        console.log("DEBUG response.output_item.done full item:", JSON.stringify(event.item, null, 2));
+        const msgItem = event.item;
+        if (msgItem && msgItem.type === "message" && msgItem.role === "assistant") {
+          // Determine assistant text: prefer accumulated streaming parts
+          let text = this.accumulatedContentParts.get(msgItem.id) || "";
+          // If no streamed text, extract directly from content array (text or audio transcripts)
+          if (!text && Array.isArray(msgItem.content)) {
+            for (const contentItem of msgItem.content) {
+              if (contentItem.type === "text" && contentItem.text) {
+                text += contentItem.text;
+              } else if (contentItem.type === "audio" && contentItem.transcript) {
+                text += contentItem.transcript;
+              }
+            }
+          }
+          // Emit completed assistant message
+          this.emit("message.completed", { role: "assistant", text, item: msgItem });
+          // Clean up accumulated parts
+          this.accumulatedContentParts.delete(msgItem.id);
+        } else if (msgItem) {
+          // Other items (e.g., function calls)
+          this.handleConversationItemCompleted(msgItem);
+        }
+        break;
+      }
 
       default:
         // Emit generic event
@@ -321,27 +415,45 @@ class OpenAIRealtimeClient extends EventEmitter {
         break;
     }
 
-    // Always emit generic event
-    this.emit("realtime.event", event);
+    // Handle special event for input audio transcription
+    if (type === "conversation.item.input_audio_transcription.completed") {
+      const transcript = event.transcript || "";
+      const item_id = event.item_id;
+
+      if (transcript) {
+        console.log(`Input audio transcription: "${transcript}"`);
+        this.emit("message.completed", {
+          role: "user",
+          text: transcript.replace(/\n$/, ""), // Remove trailing newline
+          itemId: item_id,
+        });
+      }
+    }
   }
 
   /**
    * Handle completed conversation item
    */
   handleConversationItemCompleted(item) {
-    if (item.type === "message") {
-      const { role, content } = item;
+    // DEBUG: inspect full conversation.item.completed payload
+    console.log("DEBUG handleConversationItemCompleted full item:", JSON.stringify(item, null, 2));
 
-      // Extract text content
+    if (item.type === "message") {
+      const { role } = item;
+
+      // Extract and concatenate all text or audio transcript segments from content
       let text = "";
-      if (content) {
-        for (const contentItem of content) {
-          if (contentItem.type === "text") {
-            text = contentItem.text;
-            break;
+      if (Array.isArray(item.content)) {
+        for (const contentItem of item.content) {
+          if (contentItem.type === "text" && contentItem.text) {
+            text += contentItem.text;
+          } else if (contentItem.type === "audio" && contentItem.transcript) {
+            text += contentItem.transcript;
           }
         }
       }
+
+      console.log(`Extracted message - ${role}: "${text}"`);
 
       this.emit("message.completed", {
         role,
@@ -349,10 +461,6 @@ class OpenAIRealtimeClient extends EventEmitter {
         item,
       });
 
-      // Log to our backend if it's from user or assistant
-      if (this.userUuid && (role === "user" || role === "assistant")) {
-        this.logInteraction(role, text);
-      }
     }
   }
 
@@ -361,6 +469,12 @@ class OpenAIRealtimeClient extends EventEmitter {
    */
   handleFunctionCallDelta(event) {
     const { call_id, arguments: args } = event;
+
+    // Handle undefined arguments
+    if (!args || args === "undefined") {
+      console.warn(`Received undefined arguments for call_id: ${call_id}`);
+      return;
+    }
 
     if (!this.pendingTools.has(call_id)) {
       this.pendingTools.set(call_id, "");
@@ -380,7 +494,16 @@ class OpenAIRealtimeClient extends EventEmitter {
     const arguments_str = this.pendingTools.get(call_id) || "";
 
     try {
-      const arguments_obj = JSON.parse(arguments_str);
+      // Handle possible undefined argument strings
+      let arguments_obj = {};
+      if (arguments_str && arguments_str !== "undefined") {
+        try {
+          arguments_obj = JSON.parse(arguments_str);
+        } catch (e) {
+          console.warn(`Invalid function arguments: ${arguments_str}`, e);
+          arguments_obj = { error: "Failed to parse arguments" };
+        }
+      }
 
       this.emit("function_call.done", {
         call_id,
@@ -413,29 +536,32 @@ class OpenAIRealtimeClient extends EventEmitter {
       let result;
 
       if (functionName === "search_knowledge_base") {
-        // Call our RAG endpoint
+        // Call our RAG endpoint - use absolute URL to backend
+        const backendUrl = window.location.origin.replace(":5173", ":8010");
         const response = await fetch(
-          `${this.backendUrl}/api/realtime/tools/search_knowledge_base`,
+          `${backendUrl}/api/realtime/tools/search_knowledge_base`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              query: args.query,
+              query: args.query || "Mobeus",
               user_uuid: this.userUuid,
             }),
           }
         );
         result = await response.json();
+        console.log("Search result:", result);
       } else if (functionName === "update_user_memory") {
-        // Call our memory update endpoint
+        // Call our memory update endpoint - use absolute URL to backend
+        const backendUrl = window.location.origin.replace(":5173", ":8010");
         const response = await fetch(
-          `${this.backendUrl}/api/realtime/tools/update_user_memory`,
+          `${backendUrl}/api/realtime/tools/update_user_memory`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
-              information: args.information,
-              user_uuid: args.user_uuid || this.userUuid,
+              information: args.information || "",
+              user_uuid: args.user_uuid || this.userUuid || "default",
             }),
           }
         );
@@ -456,12 +582,17 @@ class OpenAIRealtimeClient extends EventEmitter {
    * Send function result back to OpenAI
    */
   sendFunctionResult(callId, result) {
+    console.log(`Sending function result for call ${callId}:`, result);
+
+    // Ensure result is serializable
+    const safeResult = JSON.parse(JSON.stringify(result));
+
     this.sendEvent({
       type: "conversation.item.create",
       item: {
         type: "function_call_output",
         call_id: callId,
-        output: JSON.stringify(result),
+        output: JSON.stringify(safeResult),
       },
     });
 
@@ -529,7 +660,12 @@ class OpenAIRealtimeClient extends EventEmitter {
     if (!this.userUuid) return;
 
     try {
-      await fetch(`${this.backendUrl}/api/user-identity/log-interaction`, {
+      // Send interaction logs to backend (development port 8010)
+      const logUrl = window.location.origin.replace(
+        ":5173",
+        ":8010"
+      );
+      const response = await fetch(`${logUrl}/api/user-identity/log-interaction`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -538,6 +674,10 @@ class OpenAIRealtimeClient extends EventEmitter {
           message,
         }),
       });
+      // Silently ignore non-OK responses
+      if (!response.ok) {
+        return;
+      }
     } catch (error) {
       console.warn("Failed to log interaction:", error);
     }

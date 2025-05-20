@@ -1,11 +1,11 @@
+// frontend/src/components/OpenAIRealtimeAssistant.jsx
 import React, { useState, useEffect, useRef } from "react";
 import openaiRealtimeClient from "./OpenAIRealtimeClient";
 
 /**
- * OpenAI Realtime Voice Assistant using WebRTC
+ * OpenAI Realtime Voice Assistant - Polished UI
  *
- * This component uses WebRTC to connect directly to OpenAI's Realtime API
- * while integrating with our backend for RAG and memory management.
+ * Clean, modern interface with chat bubbles and central microphone
  */
 export default function OpenAIRealtimeAssistant() {
   // State
@@ -16,7 +16,6 @@ export default function OpenAIRealtimeAssistant() {
   const [error, setError] = useState(null);
   const [messages, setMessages] = useState([]);
   const [currentResponse, setCurrentResponse] = useState("");
-  const [functionCalls, setFunctionCalls] = useState([]);
 
   // User state
   const [userName, setUserName] = useState(
@@ -27,13 +26,20 @@ export default function OpenAIRealtimeAssistant() {
   );
 
   // Audio visualization
-  const [audioContext, setAudioContext] = useState(null);
-  const [audioAnalyser, setAudioAnalyser] = useState(null);
   const [audioLevels, setAudioLevels] = useState([]);
+  const [isInterrupted, setIsInterrupted] = useState(false);
 
   // Refs
+  const messagesEndRef = useRef(null);
+  const audioContextRef = useRef(null);
   const animationRef = useRef(null);
-  const audioElementRef = useRef(null);
+
+  // Auto-scroll to bottom
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(scrollToBottom, [messages, currentResponse]);
 
   // Initialize UUID
   useEffect(() => {
@@ -46,15 +52,12 @@ export default function OpenAIRealtimeAssistant() {
     openaiRealtimeClient.on("connected", handleConnected);
     openaiRealtimeClient.on("disconnected", handleDisconnected);
     openaiRealtimeClient.on("error", handleError);
-    openaiRealtimeClient.on("session.created", handleSessionCreated);
     openaiRealtimeClient.on("message.completed", handleMessageCompleted);
     openaiRealtimeClient.on("response.text.delta", handleTextDelta);
-    openaiRealtimeClient.on("response.text.done", handleTextDone);
     openaiRealtimeClient.on("response.audio.delta", handleAudioDelta);
     openaiRealtimeClient.on("response.audio.done", handleAudioDone);
     openaiRealtimeClient.on("speech.started", handleSpeechStarted);
     openaiRealtimeClient.on("speech.stopped", handleSpeechStopped);
-    openaiRealtimeClient.on("function_call.done", handleFunctionCall);
     openaiRealtimeClient.on("audio.track_received", handleAudioTrackReceived);
 
     // Cleanup on unmount
@@ -73,10 +76,10 @@ export default function OpenAIRealtimeAssistant() {
     setConnected(true);
     setConnecting(false);
     setError(null);
+
   };
 
   const handleDisconnected = () => {
-    console.log("Disconnected from OpenAI Realtime API");
     setConnected(false);
     setConnecting(false);
     setSpeaking(false);
@@ -85,33 +88,29 @@ export default function OpenAIRealtimeAssistant() {
 
   const handleError = (error) => {
     console.error("OpenAI Realtime API error:", error);
-    setError(error.message || "An error occurred");
+    setError(error.message || "Connection error occurred");
     setConnecting(false);
   };
 
-  const handleSessionCreated = (session) => {
-    console.log("Session created:", session);
-
-    // If user doesn't have a name, OpenAI will ask for it
-    if (!userName) {
-      // OpenAI will automatically start the conversation based on our instructions
-    }
-  };
-
   const handleMessageCompleted = ({ role, text }) => {
-    console.log(`Message completed - ${role}: ${text}`);
+    console.log(`Message completed - ${role}: ${text}`); // Debug log
 
-    setMessages((prev) => [
-      ...prev,
-      {
-        role,
-        text,
-        timestamp: new Date().toISOString(),
-      },
-    ]);
+    const newMessage = {
+      role,
+      text,
+      timestamp: new Date().toISOString(),
+    };
 
-    // Extract user name from first interaction if needed
-    if (role === "user" && !userName && text.length > 0) {
+    console.log("Adding message to state:", newMessage); // Debug log
+
+    setMessages((prev) => {
+      const updated = [...prev, newMessage];
+      console.log("Updated messages:", updated); // Debug log
+      return updated;
+    });
+
+    // Extract user name from any message if the user explicitly provides it
+    if (role === "user" && text.length > 0) {
       extractUserName(text);
     }
 
@@ -119,55 +118,33 @@ export default function OpenAIRealtimeAssistant() {
     setCurrentResponse("");
   };
 
+  // Handle text delta (streaming text as it's generated)
   const handleTextDelta = (delta) => {
+    console.log(`Text delta: ${delta}`);
     setCurrentResponse((prev) => prev + delta);
   };
 
-  const handleTextDone = (text) => {
-    console.log("Text response completed:", text);
-  };
-
   const handleAudioDelta = (event) => {
-    // Audio is handled by WebRTC, but we can use this for visualization
     setSpeaking(true);
   };
 
   const handleAudioDone = () => {
-    console.log("Audio response completed");
     setSpeaking(false);
   };
 
   const handleSpeechStarted = () => {
-    console.log("User speech started");
     setListening(true);
+    if (speaking) {
+      setIsInterrupted(true);
+      setTimeout(() => setIsInterrupted(false), 1000);
+    }
   };
 
   const handleSpeechStopped = () => {
-    console.log("User speech stopped");
     setListening(false);
   };
 
-  const handleFunctionCall = ({ call_id, name, arguments: args }) => {
-    console.log("Function call completed:", name, args);
-
-    setFunctionCalls((prev) => [
-      ...prev,
-      {
-        id: call_id,
-        name,
-        arguments: args,
-        timestamp: new Date().toISOString(),
-      },
-    ]);
-
-    // Clear old function calls (keep last 5)
-    setFunctionCalls((prev) => prev.slice(-5));
-  };
-
   const handleAudioTrackReceived = (stream) => {
-    console.log("Audio track received from OpenAI");
-
-    // Set up audio visualization
     setupAudioVisualization(stream);
   };
 
@@ -190,10 +167,6 @@ export default function OpenAIRealtimeAssistant() {
       }
     }
 
-    // If no pattern matched and it's a short response, use as name
-    if (!extractedName && text.trim().split(" ").length === 1) {
-      extractedName = text.trim();
-    }
 
     if (extractedName) {
       const formattedName =
@@ -214,10 +187,7 @@ export default function OpenAIRealtimeAssistant() {
       analyser.fftSize = 256;
       source.connect(analyser);
 
-      setAudioContext(audioCtx);
-      setAudioAnalyser(analyser);
-
-      // Start visualization loop
+      audioContextRef.current = { audioCtx, analyser };
       visualizeAudio(analyser);
     } catch (error) {
       console.warn("Could not set up audio visualization:", error);
@@ -233,9 +203,8 @@ export default function OpenAIRealtimeAssistant() {
       if (speaking) {
         analyser.getByteFrequencyData(dataArray);
 
-        // Calculate levels for visualization bars
         const levels = [];
-        const bands = 32; // Number of visualization bands
+        const bands = 12; // Fewer bands for cleaner look
         const step = Math.floor(bufferLength / bands);
 
         for (let i = 0; i < bands; i++) {
@@ -246,15 +215,12 @@ export default function OpenAIRealtimeAssistant() {
             sum += dataArray[start + j];
           }
 
-          levels.push(sum / step / 255); // Normalize to 0-1
+          levels.push(sum / step / 255);
         }
 
         setAudioLevels(levels);
       } else {
-        // Decay levels when not speaking
-        setAudioLevels((prev) =>
-          prev.map((level) => Math.max(0, level * 0.95))
-        );
+        setAudioLevels((prev) => prev.map((level) => Math.max(0, level * 0.9)));
       }
 
       animationRef.current = requestAnimationFrame(animate);
@@ -264,6 +230,14 @@ export default function OpenAIRealtimeAssistant() {
   };
 
   // Connection functions
+  const toggleConnection = async () => {
+    if (connected) {
+      disconnect();
+    } else {
+      await connect();
+    }
+  };
+
   const connect = async () => {
     if (connecting || connected) return;
 
@@ -280,247 +254,245 @@ export default function OpenAIRealtimeAssistant() {
 
   const disconnect = () => {
     openaiRealtimeClient.disconnect();
-    if (audioContext) {
-      audioContext.close();
-      setAudioContext(null);
-      setAudioAnalyser(null);
+    if (audioContextRef.current) {
+      audioContextRef.current.audioCtx.close();
+      audioContextRef.current = null;
     }
+    setAudioLevels([]);
   };
 
-  // Send text message
-  const sendText = (text) => {
-    if (connected && text.trim()) {
-      openaiRealtimeClient.sendText(text);
-    }
+  // Get status text
+  const getStatusText = () => {
+    if (error) return error;
+    if (connecting) return "Connecting...";
+    if (!connected) return "Ready to chat";
+    if (listening) return "Listening...";
+    if (speaking) return currentResponse ? "AI speaking..." : "AI thinking...";
+    return "Connected";
   };
 
-  // Cancel current response
-  const cancelResponse = () => {
-    openaiRealtimeClient.cancelResponse();
-    setCurrentResponse("");
-    setSpeaking(false);
-  };
-
-  // Get status indicator color
+  // Get status color
   const getStatusColor = () => {
     if (error) return "text-red-500";
-    if (connected && listening) return "text-green-500";
-    if (connected && speaking) return "text-blue-500";
-    if (connected) return "text-emerald-500";
-    if (connecting) return "text-yellow-500";
+    if (listening) return "text-green-600";
+    if (speaking) return "text-blue-600";
+    if (connected) return "text-emerald-600";
     return "text-gray-500";
   };
 
   return (
-    <div className="flex flex-col min-h-screen bg-gradient-to-b from-gray-900 to-black text-white">
+    <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col">
       {/* Header */}
-      <div className="p-6 border-b border-gray-800">
-        <h1 className="text-3xl font-bold mb-4">Mobeus AI Assistant</h1>
-        <p className="text-gray-400 mb-4">
-          WebRTC connection to OpenAI Realtime API
-        </p>
-
-        {/* Status indicators */}
-        <div className="flex flex-wrap gap-3">
-          <div
-            className={`px-3 py-1 rounded-full text-sm border ${
-              connected
-                ? "border-green-600 bg-green-900"
-                : connecting
-                ? "border-yellow-600 bg-yellow-900"
-                : "border-gray-600 bg-gray-800"
-            }`}
-          >
-            <span
-              className={`inline-block w-2 h-2 rounded-full mr-2 ${getStatusColor()} animate-pulse`}
-            ></span>
-            {connecting
-              ? "Connecting..."
-              : connected
-              ? "Connected"
-              : "Disconnected"}
-          </div>
-
-          <div
-            className={`px-3 py-1 rounded-full text-sm ${
-              listening ? "bg-green-600 animate-pulse" : "bg-gray-700"
-            }`}
-          >
-            🎤 {listening ? "Listening" : "Standby"}
-          </div>
-
-          <div
-            className={`px-3 py-1 rounded-full text-sm ${
-              speaking ? "bg-blue-600 animate-pulse" : "bg-gray-700"
-            }`}
-          >
-            🔊 {speaking ? "AI Speaking" : "Silent"}
-          </div>
-
+      <div className="bg-white border-b border-gray-200 p-4">
+        <div className="max-w-6xl mx-auto">
+          <h1 className="text-xl font-medium">Mobeus AI Assistant</h1>
           {userName && (
-            <div className="px-3 py-1 rounded-full text-sm bg-purple-600">
-              👤 {userName}
-            </div>
+            <p className="text-gray-500 text-sm mt-1">
+              Welcome back, {userName}
+            </p>
           )}
         </div>
-
-        {/* Error display */}
-        {error && (
-          <div className="mt-3 p-3 bg-red-900 border border-red-600 rounded-lg">
-            <strong>Error:</strong> {error}
-          </div>
-        )}
-
-        {/* Function calls display */}
-        {functionCalls.length > 0 && (
-          <div className="mt-3 p-3 bg-blue-900 border border-blue-600 rounded-lg">
-            <strong>Active Tools:</strong> {functionCalls.slice(-1)[0].name}
-          </div>
-        )}
       </div>
 
-      {/* Main content area */}
-      <div className="flex-1 flex">
-        {/* Chat area */}
-        <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full p-6">
-          {/* Messages */}
-          <div className="flex-1 overflow-y-auto space-y-4 mb-6">
-            {messages.map((message, index) => (
-              <div
-                key={index}
-                className={`flex ${
-                  message.role === "user" ? "justify-end" : "justify-start"
-                }`}
-              >
-                <div
-                  className={`max-w-[80%] p-4 rounded-2xl shadow ${
-                    message.role === "user"
-                      ? "bg-blue-600 text-white"
-                      : "bg-gray-700 text-white"
-                  }`}
-                >
-                  <div className="font-semibold mb-1">
-                    {message.role === "user" ? userName || "You" : "Mobeus AI"}
+      {/* Main Content */}
+      <div className="flex-1 flex max-w-6xl mx-auto w-full">
+        {/* Left Side - User Messages */}
+        <div className="flex-1 p-4">
+          <div className="h-full flex flex-col">
+            <h2 className="text-sm font-medium text-gray-600 mb-3">You</h2>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {messages
+                .filter((msg) => msg.role === "user")
+                .map((message, index) => (
+                  <div key={`user-${index}`} className="flex justify-end">
+                    <div className="bg-blue-500 text-white rounded-lg rounded-br-sm px-3 py-2 max-w-xs text-sm shadow-sm">
+                      <p>{message.text}</p>
+                      <p className="text-blue-100 text-xs mt-1 opacity-75">
+                        {new Date(message.timestamp).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    </div>
                   </div>
-                  <div className="whitespace-pre-wrap">{message.text}</div>
-                  <div className="text-xs opacity-70 mt-1">
-                    {new Date(message.timestamp).toLocaleTimeString()}
-                  </div>
-                </div>
-              </div>
-            ))}
-
-            {/* Current response */}
-            {currentResponse && (
-              <div className="flex justify-start">
-                <div className="max-w-[80%] p-4 rounded-2xl bg-gray-700 text-white shadow">
-                  <div className="font-semibold mb-1">Mobeus AI</div>
-                  <div className="whitespace-pre-wrap">
-                    {currentResponse}
-                    <span className="inline-block animate-pulse ml-1">▊</span>
-                  </div>
-                </div>
-              </div>
-            )}
-          </div>
-
-          {/* Audio visualization */}
-          {speaking && audioLevels.length > 0 && (
-            <div className="mb-6 bg-gray-800 rounded-lg p-4">
-              <div className="text-center text-sm text-gray-400 mb-2">
-                AI Speaking
-              </div>
-              <div className="flex items-end justify-center space-x-1 h-16">
-                {audioLevels.map((level, i) => (
-                  <div
-                    key={i}
-                    className="bg-blue-500 w-2 rounded-t transition-all duration-100"
-                    style={{ height: `${Math.max(4, level * 100)}%` }}
-                  />
                 ))}
-              </div>
+              {/* Show current user input if any interim results */}
             </div>
-          )}
-
-          {/* Controls */}
-          <div className="flex flex-col items-center space-y-4">
-            {/* Main connect/disconnect button */}
-            {!connected ? (
-              <button
-                onClick={connect}
-                disabled={connecting}
-                className="px-8 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-semibold disabled:bg-gray-600 disabled:cursor-not-allowed transition-colors"
-              >
-                {connecting ? "Connecting..." : "Start Voice Chat"}
-              </button>
-            ) : (
-              <div className="flex space-x-3">
-                <button
-                  onClick={disconnect}
-                  className="px-6 py-2 bg-red-600 hover:bg-red-700 rounded-lg font-medium transition-colors"
-                >
-                  Disconnect
-                </button>
-
-                {(speaking || currentResponse) && (
-                  <button
-                    onClick={cancelResponse}
-                    className="px-6 py-2 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-medium transition-colors"
-                  >
-                    Interrupt
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* Instructions */}
-            <div className="text-center text-gray-400 text-sm max-w-md">
-              {!connected
-                ? "Connect to start talking with Mobeus AI. Voice recognition and responses are powered by OpenAI."
-                : listening
-                ? "I'm listening... speak naturally"
-                : speaking
-                ? "AI is responding..."
-                : "Connected and ready - just start talking!"}
-            </div>
-
-            {/* Debug info (only in development) */}
-            {process.env.NODE_ENV === "development" && connected && (
-              <details className="text-xs text-gray-500">
-                <summary>Debug Info</summary>
-                <pre className="mt-2">
-                  {JSON.stringify(openaiRealtimeClient.getStatus(), null, 2)}
-                </pre>
-              </details>
-            )}
           </div>
         </div>
 
-        {/* Side panel for function calls */}
-        {functionCalls.length > 0 && (
-          <div className="w-80 border-l border-gray-800 p-4">
-            <h3 className="text-lg font-semibold mb-4">Tool Activity</h3>
-            <div className="space-y-3">
-              {functionCalls
-                .slice(-5)
-                .reverse()
-                .map((call) => (
-                  <div key={call.id} className="p-3 bg-gray-800 rounded-lg">
-                    <div className="font-medium text-blue-400">{call.name}</div>
-                    <div className="text-sm text-gray-400 mt-1">
-                      {call.name === "search_knowledge_base" &&
-                        call.arguments.query}
-                      {call.name === "update_user_memory" &&
-                        call.arguments.information}
-                    </div>
-                    <div className="text-xs text-gray-500 mt-2">
-                      {new Date(call.timestamp).toLocaleTimeString()}
+        {/* Center - Microphone & Controls */}
+        <div className="w-64 flex flex-col items-center justify-center p-4 bg-white border-x border-gray-200">
+          {/* Audio Visualization */}
+          {speaking && audioLevels.length > 0 && (
+            <div className="mb-6 flex items-end justify-center space-x-1 h-12">
+              {audioLevels.map((level, i) => (
+                <div
+                  key={i}
+                  className="bg-blue-400 w-2 rounded-full transition-all duration-100"
+                  style={{
+                    height: `${Math.max(4, level * 60)}%`,
+                    opacity: speaking ? 1 : 0.3,
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Main Microphone Button */}
+          <button
+            onClick={toggleConnection}
+            disabled={connecting}
+            className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 border-2 ${
+              connecting
+                ? "bg-yellow-500 border-yellow-600 cursor-wait"
+                : connected
+                ? listening
+                  ? "bg-green-500 border-green-600 shadow-lg scale-105"
+                  : speaking
+                  ? "bg-blue-500 border-blue-600 shadow-lg"
+                  : "bg-gray-100 border-gray-300 hover:bg-gray-200 shadow-md"
+                : "bg-gray-100 border-gray-300 hover:bg-gray-200"
+            } ${listening || speaking ? "animate-pulse" : ""} ${
+              isInterrupted ? "ring-4 ring-yellow-400" : ""
+            }`}
+          >
+            {/* Microphone Icon */}
+            <svg
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`${
+                connected && (listening || speaking)
+                  ? "text-white"
+                  : "text-gray-600"
+              }`}
+            >
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" x2="12" y1="19" y2="22" />
+            </svg>
+          </button>
+
+          {/* Status Text */}
+          <div className="mt-4 text-center">
+            <p className={`text-sm font-medium ${getStatusColor()}`}>
+              {getStatusText()}
+            </p>
+            {connected && !error && (
+              <p className="text-xs text-gray-400 mt-1">
+                {listening
+                  ? "Speak naturally"
+                  : speaking
+                  ? "AI is responding"
+                  : "Tap to start talking"}
+              </p>
+            )}
+          </div>
+
+          {/* Error Display */}
+          {error && (
+            <div className="mt-4 p-2 bg-red-50 border border-red-200 rounded-lg text-center max-w-xs">
+              <p className="text-red-600 text-xs">{error}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Right Side - Assistant Messages */}
+        <div className="flex-1 p-4">
+          <div className="h-full flex flex-col">
+            <h2 className="text-sm font-medium text-gray-600 mb-3">
+              Mobeus AI
+            </h2>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {messages
+                .filter((msg) => msg.role === "assistant")
+                .map((message, index) => (
+                  <div
+                    key={`assistant-${index}`}
+                    className="flex justify-start"
+                  >
+                    <div className="bg-gray-100 rounded-lg rounded-bl-sm px-3 py-2 max-w-xs text-sm shadow-sm">
+                      <p className="text-gray-800">{message.text}</p>
+                      <p className="text-gray-500 text-xs mt-1 opacity-75">
+                        {new Date(message.timestamp).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
                     </div>
                   </div>
                 ))}
+
+              {/* Current Response */}
+              {currentResponse && (
+                <div className="flex justify-start">
+                  <div className="bg-gray-100 rounded-lg rounded-bl-sm px-3 py-2 max-w-xs text-sm shadow-sm border border-gray-200 animate-pulse">
+                    <p className="text-gray-800">
+                      {currentResponse}
+                      <span className="inline-block w-1 h-4 bg-gray-400 ml-1 animate-pulse" />
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Auto-scroll target */}
+              <div ref={messagesEndRef} />
             </div>
           </div>
-        )}
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="bg-white border-t border-gray-200 p-3">
+        <div className="max-w-6xl mx-auto text-center">
+          <p className="text-xs text-gray-400">
+            Powered by OpenAI Realtime API • WebRTC Connection
+            {connected && (
+              <span className="ml-2 inline-flex items-center">
+                <span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1" />
+                Live
+              </span>
+            )}
+          </p>
+
+          {/* Debug info - remove this later */}
+          {process.env.NODE_ENV === "development" && (
+            <details className="mt-2 text-left">
+              <summary className="text-xs text-gray-500 cursor-pointer">
+                Debug Info
+              </summary>
+              <div className="mt-2 p-2 bg-gray-100 rounded text-xs">
+                <p>
+                  <strong>Messages count:</strong> {messages.length}
+                </p>
+                <p>
+                  <strong>Current response:</strong> {currentResponse || "None"}
+                </p>
+                <p>
+                  <strong>Connected:</strong> {connected ? "Yes" : "No"}
+                </p>
+                <p>
+                  <strong>Listening:</strong> {listening ? "Yes" : "No"}
+                </p>
+                <p>
+                  <strong>Speaking:</strong> {speaking ? "Yes" : "No"}
+                </p>
+                <div className="mt-2">
+                  <strong>Messages:</strong>
+                  <pre className="whitespace-pre-wrap text-xs bg-white p-1 mt-1 rounded border">
+                    {JSON.stringify(messages, null, 2)}
+                  </pre>
+                </div>
+              </div>
+            </details>
+          )}
+        </div>
       </div>
     </div>
   );

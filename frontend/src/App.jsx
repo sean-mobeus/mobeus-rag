@@ -1,15 +1,12 @@
+// frontend/src/App.jsx
 import React from "react";
-// Use the original WebRTC-based assistant for audio capture/processing
-import WebRTCVoiceAssistant from "./components/WebRTCVoiceAssistant";
-import "./App.css";
+import OpenAIRealtimeAssistant from "./components/OpenAIRealtimeAssistant";
+// import OpenAIRealtimeAssistant from "./components/TailwindTest";
 
-/**
- * Main App component that renders the WebRTC Voice Assistant
- */
 function App() {
   return (
-    <div className="app">
-      <WebRTCVoiceAssistant />
+    <div className="App">
+      <OpenAIRealtimeAssistant />
     </div>
   );
 }

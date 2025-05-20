@@ -9,9 +9,10 @@ export default defineConfig({
       "/config": "http://localhost:8010",
     },
   },
+  plugins: [react()], // This should be an array with react plugin, not PostCSS config
   // Do not clean dist on build to preserve php folder and avoid permission issues
   build: {
-    emptyOutDir: false
+    emptyOutDir: false,
   },
 });
 
