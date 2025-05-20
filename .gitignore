@@ -9,3 +9,6 @@ docker-compose.override.yml
 nginx/dev.conf
 nginx/zz_dev.conf
 nginx/nginx.conf
+nginx/zz_dev.conf
+.DS_Store
+

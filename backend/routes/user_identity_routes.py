@@ -1,17 +1,17 @@
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
+from typing import Optional
 from memory.user_identity import get_user, upsert_user
 
 router = APIRouter()
-
 class UserPayload(BaseModel):
     uuid: str
-    name: str = None
+    name: Optional[str] = None
 
 @router.post("/api/user")
 async def save_user(payload: UserPayload):
     try:
-        upsert_user(payload.uuid, payload.name)
+        upsert_user(payload.uuid, payload.name or "")
         return {"status": "ok"}
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

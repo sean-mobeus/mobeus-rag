@@ -1,45 +1,62 @@
-import psycopg2
+
+# backend/memory/user_identity.py
+"""
+User identity management module
+"""
 import os
 from datetime import datetime
-
-DB_PARAMS = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": os.getenv("POSTGRES_PORT", 5432),
-    "dbname": os.getenv("POSTGRES_DB", "mobeus"),
-    "user": os.getenv("POSTGRES_USER", "postgres"),
-    "password": os.getenv("POSTGRES_PASSWORD", "password")
-}
-
-def get_connection():
-    return psycopg2.connect(**DB_PARAMS)
+from typing import Optional, Dict, Any
+from memory.db import get_connection, execute_db_operation, ensure_tables_exist
 
 def init_user_table():
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS users (
-                    uuid TEXT PRIMARY KEY,
-                    name TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            conn.commit()
+    """
+    Initialize the users table
+    This is now handled by the centralized db module
+    """
+    from memory.db import init_user_table
+    init_user_table()
 
-def upsert_user(uuid: str, name: str = None):
+def _upsert_user_impl(uuid: str, name: str):
+    """Implementation of upsert_user without error handling"""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                """
                 INSERT INTO users (uuid, name)
                 VALUES (%s, %s)
-                ON CONFLICT (uuid) DO UPDATE SET name = EXCLUDED.name;
-            """, (uuid, name))
+                ON CONFLICT (uuid) DO UPDATE
+                SET name = EXCLUDED.name
+                """,
+                (uuid, name)
+            )
             conn.commit()
 
-def get_user(uuid: str):
+def upsert_user(uuid: str, name: str):
+    """
+    Insert or update user information.
+    """
+    return execute_db_operation(_upsert_user_impl, uuid, name)
+
+def _get_user_impl(uuid: str) -> Optional[Dict[str, Any]]:
+    """Implementation of get_user without error handling"""
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT uuid, name, created_at FROM users WHERE uuid = %s", (uuid,))
+            cur.execute(
+                "SELECT uuid, name, created_at FROM users WHERE uuid = %s",
+                (uuid,)
+            )
             row = cur.fetchone()
             if row:
-                return {"uuid": row[0], "name": row[1], "created_at": row[2].isoformat()}
+                return {
+                    "uuid": row[0],
+                    "name": row[1],
+                    "created_at": row[2].isoformat() if row[2] else None
+                }
             return None
+
+def get_user(uuid: str) -> Optional[Dict[str, Any]]:
+    """
+    Get user information by UUID.
+    Returns user dict if found, None otherwise.
+    """
+    return execute_db_operation(_get_user_impl, uuid)

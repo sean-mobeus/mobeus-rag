@@ -1,12 +1,15 @@
-// frontend/src/App.jsx
 import React from "react";
+// Use the original WebRTC-based assistant for audio capture/processing
+import WebRTCVoiceAssistant from "./components/WebRTCVoiceAssistant";
 import "./App.css";
-import StreamingChatUI from "./components/StreamingChatUI";
 
+/**
+ * Main App component that renders the WebRTC Voice Assistant
+ */
 function App() {
   return (
     <div className="app">
-      <StreamingChatUI />
+      <WebRTCVoiceAssistant />
     </div>
   );
 }
