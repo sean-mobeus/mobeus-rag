@@ -1,9 +1,40 @@
-fastapi
-uvicorn
-openai
-python-multipart
-chromadb
-tiktoken
-python-docx
-httpx
-psycopg2-binary  # PostgreSQL driver for session and persistent memory
+# Mobeus Admin Dashboard Requirements
+
+# Web framework
+fastapi>=0.95.0
+uvicorn>=0.21.1
+jinja2>=3.1.2
+python-multipart>=0.0.6
+
+# Database
+psycopg2-binary>=2.9.6
+sqlalchemy>=2.0.9
+
+# OpenAI API
+openai>=1.0.0
+
+# RAG components
+chromadb>=0.4.6
+sentence-transformers>=2.2.2
+
+# System monitoring
+psutil>=5.9.5
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.0.3
+requests>=2.28.2
+websockets>=11.0.3
+python-docx>=0.8.11
+httpx>=0.24.1
+tiktoken>=0.3.3
+
+# Visualization
+matplotlib>=3.7.1
+pandas>=2.0.0
+
+
+
+
+
+

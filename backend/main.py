@@ -1,3 +1,4 @@
+# Modified main.py with admin dashboard integration
 import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
@@ -19,11 +20,13 @@ from routes import streaming_rag
 from routes import user_identity_routes
 from routes import openai_realtime_tokens
 from memory.session_memory import log_interaction
-from routes.dashboard import debug_dashboard
-from routes.dashboard import config_dashboard
+# Dashboard imports disabled
+# from routes.dashboard import debug_dashboard
+# from routes.dashboard import config_dashboard
 from routes import webrtc_signaling
 
-
+# Dashboard integration disabled
+# from dashboard_integration import setup_admin_dashboard
 
 # Initialize database
 @asynccontextmanager
@@ -46,20 +49,23 @@ app = FastAPI(lifespan=lifespan)
 # CORS setup
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # frontend dev URL
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Static file serving
+# Include existing routes (dashboards disabled)
 app.include_router(speak_stream.router)
 app.include_router(streaming_rag.router)
 app.include_router(user_identity_routes.router)
-app.include_router(debug_dashboard.router)
-app.include_router(config_dashboard.router)
+# app.include_router(debug_dashboard.router)
+# app.include_router(config_dashboard.router)  # Dashboard routes disabled
 app.include_router(webrtc_signaling.router)
 app.include_router(openai_realtime_tokens.router)
+
+## Dashboard setup disabled
+# setup_admin_dashboard(app, prefix="/admin")
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -145,13 +151,23 @@ async def query_rag_endpoint(payload: QueryRequest):
         # Return proper HTTP error for front-end to catch
         raise HTTPException(status_code=500, detail=str(e))
     
-# @app.get("/debug/routes")
-# async def list_routes():
-#     routes = []
-#     for route in app.routes:
-#         if hasattr(route, 'methods') and hasattr(route, 'path'):
-#             routes.append({
-#                 "path": route.path,
-#                 "methods": list(route.methods)
-#             })
-#     return {"routes": routes}
+## Admin dashboard endpoint disabled
+## @app.get("/admin-dashboard")
+## async def redirect_to_admin_dashboard():
+##     """Redirect to the new admin dashboard"""
+##     from fastapi.responses import RedirectResponse
+##     return RedirectResponse(url="/admin/")
+
+# Debug endpoint to list all routes
+@app.get("/debug/routes")
+async def list_routes():
+    routes = []
+    for route in app.routes:
+        path = getattr(route, "path", None)
+        methods = getattr(route, "methods", None)
+        if path is not None and methods is not None:
+            routes.append({
+                "path": path,
+                "methods": list(methods)
+            })
+    return {"routes": routes}

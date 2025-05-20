@@ -1,6 +1,7 @@
 # routes/openai_realtime_tokens.py
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
+from typing import Optional
 
 # Add request models for tools
 class SearchKnowledgeBaseRequest(BaseModel):
@@ -13,11 +14,10 @@ class UpdateUserMemoryRequest(BaseModel):
 import httpx
 from config import OPENAI_API_KEY
 from openaiconfig.openai_realtime_constants import (
-    REALTIME_VOICES, 
-    REALTIME_MODELS, 
+    REALTIME_VOICES,
+    REALTIME_MODELS,
     DEFAULT_REALTIME_CONFIG
 )
-from typing import Optional
 import logging
 
 logger = logging.getLogger(__name__)

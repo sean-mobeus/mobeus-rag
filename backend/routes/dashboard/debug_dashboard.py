@@ -1,106 +1,182 @@
+# debug_dashboard.py
 import os
 import json
-import shutil
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+import datetime
+from typing import List, Dict, Any, Optional
+from fastapi import APIRouter, Request, Query
+from fastapi.responses import HTMLResponse, JSONResponse
 from config import DEBUG_LOG_PATH
+import psutil
 
 router = APIRouter()
 
-@router.get("/debug", response_class=HTMLResponse)
-def get_debug_log():
-    log_path = os.getenv("MOBEUS_DEBUG_LOG", "rag_debug_fresh.jsonl")
+# Try to import psutil but make it optional
+try:
+    import psutil
+    HAS_PSUTIL = True
+except ImportError:
+    HAS_PSUTIL = False
+    print("Warning: psutil not installed. System stats will be unavailable.")
 
-    # If it’s a directory instead of a file, delete it
-    if os.path.isdir(log_path):
-        shutil.rmtree(log_path)
+def format_time(seconds: float) -> str:
+    """Format time in seconds to a human-readable string with appropriate units."""
+    if seconds < 0.001:
+        return f"{seconds * 1000000:.1f}μs"
+    elif seconds < 1:
+        return f"{seconds * 1000:.1f}ms"
+    else:
+        return f"{seconds:.2f}s"
 
-    # If it doesn't exist, create a blank log file
-    if not os.path.exists(log_path):
-        with open(log_path, "w") as f:
-            f.write("")
-        return HTMLResponse("<h2>Log file was missing. Created new empty log file.</h2>", status_code=200)
-
+def get_system_stats() -> Dict[str, Any]:
+    """Get system statistics like CPU, memory usage, etc."""
     try:
-        with open(log_path, "r") as f:
-            lines = f.readlines()
-            if not lines:
-                return HTMLResponse("<h2>Log file is empty.</h2>", status_code=200)
+        if not HAS_PSUTIL:
+            return {
+                "error": "psutil not installed",
+                "cpu_percent": 0,
+                "memory_percent": 0,
+                "active_connections": 0,
+                "uptime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            }
+            
+        return {
+            "cpu_percent": psutil.cpu_percent(interval=0.1),
+            "memory_percent": psutil.virtual_memory().percent,
+            "active_connections": len(psutil.net_connections("inet4")),
+            "uptime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+    except Exception as e:
+        print(f"Error getting system stats: {e}")
+        return {
+            "cpu_percent": 0,
+            "memory_percent": 0,
+            "active_connections": 0,
+            "uptime": datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "error": str(e)
+        }
 
-        html = ["<h1>Mobeus Debug Log</h1>"]
-        for line in reversed(lines[-50:]):
+def get_log_entries(limit: int = 50, filter_query: Optional[str] = None) -> List[Dict[str, Any]]:
+    """
+    Get log entries from the debug log file.
+    
+    Args:
+        limit: Maximum number of entries to return
+        filter_query: Optional string to filter entries by query text
+        
+    Returns:
+        List of log entry dictionaries
+    """
+    entries = []
+    
+    try:
+        if not os.path.exists(DEBUG_LOG_PATH):
+            return entries
+            
+        with open(DEBUG_LOG_PATH, "r") as f:
+            lines = f.readlines()
+            
+        for line in reversed(lines):
             try:
                 entry = json.loads(line)
-                ts = entry.get("timestamp", "")
-                query = entry.get("query", "")
-                answer = entry.get("answer", "")
-                html.append(f"<div><strong>{ts}</strong>: <em>{query}</em><br><pre>{answer}</pre></div><hr>")
+                
+                # Apply filter if provided
+                if filter_query and filter_query.lower() not in entry.get("query", "").lower():
+                    continue
+                    
+                # Calculate additional metrics
+                timings = entry.get("timings", {})
+                if timings:
+                    # Calculate retrieval percentage of total time
+                    if "retrieval" in timings and "total" in timings and timings["total"] > 0:
+                        timings["retrieval_percent"] = (timings["retrieval"] / timings["total"]) * 100
+                    
+                    # Calculate GPT percentage of total time
+                    if "gpt" in timings and "total" in timings and timings["total"] > 0:
+                        timings["gpt_percent"] = (timings["gpt"] / timings["total"]) * 100
+                        
+                    # Format timing values for display
+                    for key, value in timings.items():
+                        if isinstance(value, (int, float)) and not key.endswith("_percent"):
+                            timings[f"{key}_formatted"] = format_time(value)
+                
+                entries.append(entry)
+                
+                if len(entries) >= limit:
+                    break
             except json.JSONDecodeError:
-                html.append("<div><em>Malformed log entry</em></div><hr>")
-
-        return HTMLResponse("".join(html), status_code=200)
-
+                continue
     except Exception as e:
-        return HTMLResponse(f"<h2>Error reading log file: {e}</h2>", status_code=500)
+        print(f"Error reading log file: {e}")
+    
+    return entries
 
-    html = [
-        "<head><title>Mobeus Assistant — Debug Log</title><style>",
-        "body{font-family:sans-serif;padding:2rem;background:#f9f9f9}",
-        "h1{margin-bottom:1rem}pre{background:#eee;padding:1rem;border-radius:6px;white-space:pre-wrap;word-break:break-word;overflow-x:auto;max-width:100%;display:block}",
-        "details{border:1px solid #ccc;border-radius:8px;padding:1rem;background:#fff;margin-bottom:1rem}",
-        "details summary{font-weight:bold;font-size:1rem;cursor:pointer;margin-bottom:0.5rem}",
-        "details[open] summary::after{content:' ▲'}details summary::after{content:' ▼'}",
-        ".metric{display:inline-block;margin-right:1rem;padding:0.3rem 0.5rem;border-radius:4px;background:#f0f0f0;margin-bottom:0.5rem}",
-        ".good{color:green}.warning{color:orange}.bad{color:red}",
-        ".metrics-grid{display:grid;grid-template-columns:repeat(auto-fill, minmax(180px, 1fr));gap:0.5rem}",
-        "</style></head><body><h1>Mobeus Assistant — Debug Log</h1>",
-        "<div style='margin-bottom:1rem'>",
-        "<p><strong>Performance Targets:</strong> ",
-        "<span class='metric good'>GPT &lt; 3s</span> ",
-        "<span class='metric good'>TTS First Chunk &lt; 1.5s</span> ",
-        "<span class='metric good'>Total &lt; 5s</span>",
-        "</p></div>"
-    ]
+@router.get("/debug", response_class=JSONResponse)
+async def debug_dashboard(
+    request: Request,
+    limit: int = Query(50, description="Number of log entries to show"),
+    filter: Optional[str] = Query(None, description="Filter logs by query text")
+):
+    """
+    Simple debug dashboard that returns log entries as JSON.
+    """
+    entries = get_log_entries(limit=limit, filter_query=filter)
+    return JSONResponse(entries)
 
-    try:
-        with open(log_path, "r") as f:
-            lines = reversed(f.readlines()[-50:])
-    except Exception:
-        return HTMLResponse("<h2>Error reading log file.</h2>", status_code=500)
+@router.get("/debug/data")
+async def get_debug_data(
+    limit: int = Query(50, description="Number of log entries to return"),
+    filter: Optional[str] = Query(None, description="Filter logs by query text")
+):
+    """
+    API endpoint to get debug data as JSON for external use.
+    """
+    entries = get_log_entries(limit=limit, filter_query=filter)
+    system_stats = get_system_stats()
+    
+    return JSONResponse({
+        "entries": entries,
+        "system_stats": system_stats,
+        "summary": {
+            "total_entries": len(entries),
+            "avg_total_time": sum([entry.get("timings", {}).get("total", 0) for entry in entries]) / max(len(entries), 1),
+            "avg_gpt_time": sum([entry.get("timings", {}).get("gpt", 0) for entry in entries]) / max(len(entries), 1),
+            "avg_retrieval_time": sum([entry.get("timings", {}).get("retrieval", 0) for entry in entries]) / max(len(entries), 1),
+        }
+    })
 
-    for line in lines:
-        try:
-            entry = json.loads(line)
-            ts = entry.get("timestamp", "")
-            q = entry.get("query", "")
-            a = entry.get("answer", "")
-            timings = entry.get("timings", {})
-            chunks = entry.get("top_chunks", [])
-            html.append(f"<details><summary><strong>{ts}</strong> — <em>{q}</em></summary><div>")
-            html.append(f"<strong>Answer:</strong><br><pre>{a}</pre>")
-
-            if timings:
-                html.append("<strong>Performance Metrics:</strong>")
-                html.append("<div class='metrics-grid'>")
-
-                def format_metric(name, value, unit="s", thresholds=None):
-                    if value is None:
-                        return f"<div class='metric'><strong>{name}:</strong> N/A</div>"
-                    if thresholds is None:
-                        thresholds = (3.0, 5.0) if name == "gpt" else (2.0, 4.0)
-                    color = "good" if value <= thresholds[0] else "warning" if value <= thresholds[1] else "bad"
-                    val = f"{value:.2f}" if isinstance(value, float) else value
-                    return f"<div class='metric {color}'><strong>{name}:</strong> {val}{unit}</div>"
-
-                for key, val in timings.items():
-                    html.append(format_metric(key, val))
-                html.append("</div>")
-
-            html.append("<strong>Top Chunks:</strong><br><pre>" + json.dumps(chunks, indent=2) + "</pre>")
-            html.append("<details><summary style='margin-top:1rem'>🔍 RAW JSON</summary><pre>" + line + "</pre></details>")
-            html.append("</div></details>")
-        except Exception as e:
-            html.append(f"<p>Error parsing line: {e}</p>")
-
-    html.append("</body>")
-    return HTMLResponse(content="".join(html), status_code=200)
+@router.get("/debug/sessions")
+async def get_debug_sessions():
+    """
+    View active sessions and their metrics.
+    This is a placeholder that would need integration with actual session tracking.
+    """
+    # This would need to be implemented with actual session tracking
+    sessions = []
+    
+    html_content = """
+    <html>
+    <head>
+        <title>Mobeus Assistant — Active Sessions</title>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <style>
+            body { font-family: sans-serif; padding: 2rem; }
+            h1 { margin-bottom: 1rem; }
+            .empty-state { 
+                text-align: center;
+                padding: 4rem;
+                color: #6b7280;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>Active Sessions</h1>
+        <div class="empty-state">
+            <p>No active sessions found.</p>
+            <p>Session tracking needs to be implemented.</p>
+        </div>
+    </body>
+    </html>
+    """
+    
+    return HTMLResponse(content=html_content)
