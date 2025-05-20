@@ -1,12 +1,12 @@
 // frontend/src/App.jsx
 import React from "react";
-import "./App.css";
-import StreamingChatUI from "./components/StreamingChatUI";
+
+import OpenAIRealtimeAssistant from "/src/components/OpenAIRealTimeAssistant.jsx";
 
 function App() {
   return (
-    <div className="app">
-      <StreamingChatUI />
+    <div className="App">
+      <OpenAIRealtimeAssistant />
     </div>
   );
 }

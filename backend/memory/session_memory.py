@@ -1,33 +1,21 @@
-import psycopg2
+"""
+Session memory management module
+"""
 import os
 from datetime import datetime
-
-DB_PARAMS = {
-    "host": os.getenv("POSTGRES_HOST", "localhost"),
-    "port": os.getenv("POSTGRES_PORT", 5432),
-    "dbname": os.getenv("POSTGRES_DB", "mobeus"),
-    "user": os.getenv("POSTGRES_USER", "postgres"),
-    "password": os.getenv("POSTGRES_PASSWORD", "password")
-}
-
-def get_connection():
-    return psycopg2.connect(**DB_PARAMS)
+from typing import Optional, Dict, Any, List
+from memory.db import get_connection, execute_db_operation, ensure_tables_exist
 
 def init_session_table():
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS session_memory (
-                    id SERIAL PRIMARY KEY,
-                    uuid TEXT NOT NULL,
-                    role TEXT NOT NULL,  -- 'user' or 'assistant'
-                    message TEXT NOT NULL,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-            """)
-            conn.commit()
+    """
+    Initialize the session_memory table
+    This is now handled by the centralized db module
+    """
+    from memory.db import init_session_table
+    init_session_table()
 
-def log_interaction(uuid: str, role: str, message: str):
+def _log_interaction_impl(uuid: str, role: str, message: str):
+    """Implementation of log_interaction without error handling"""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -36,7 +24,15 @@ def log_interaction(uuid: str, role: str, message: str):
             """, (uuid, role, message))
             conn.commit()
 
-def get_recent_interactions(uuid: str, limit: int = 5):
+def log_interaction(uuid: str, role: str, message: str):
+    """
+    Log a user or assistant interaction
+    Now with automatic error handling and table creation
+    """
+    return execute_db_operation(_log_interaction_impl, uuid, role, message)
+
+def _get_recent_interactions_impl(uuid: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Implementation of get_recent_interactions without error handling"""
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("""
@@ -47,3 +43,10 @@ def get_recent_interactions(uuid: str, limit: int = 5):
             """, (uuid, limit))
             rows = cur.fetchall()
             return list(reversed([{"role": r, "message": m} for r, m in rows]))
+
+def get_recent_interactions(uuid: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """
+    Get recent interactions for a user
+    Now with automatic error handling and table creation
+    """
+    return execute_db_operation(_get_recent_interactions_impl, uuid, limit)

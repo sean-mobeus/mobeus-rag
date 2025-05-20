@@ -1,0 +1,499 @@
+// frontend/src/components/OpenAIRealtimeAssistant.jsx
+import React, { useState, useEffect, useRef } from "react";
+import openaiRealtimeClient from "./OpenAIRealtimeClient";
+
+/**
+ * OpenAI Realtime Voice Assistant - Polished UI
+ *
+ * Clean, modern interface with chat bubbles and central microphone
+ */
+export default function OpenAIRealtimeAssistant() {
+  // State
+  const [connected, setConnected] = useState(false);
+  const [connecting, setConnecting] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const [listening, setListening] = useState(false);
+  const [error, setError] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [currentResponse, setCurrentResponse] = useState("");
+
+  // User state
+  const [userName, setUserName] = useState(
+    localStorage.getItem("userName") || ""
+  );
+  const [userUuid] = useState(
+    localStorage.getItem("uuid") || crypto.randomUUID()
+  );
+
+  // Audio visualization
+  const [audioLevels, setAudioLevels] = useState([]);
+  const [isInterrupted, setIsInterrupted] = useState(false);
+
+  // Refs
+  const messagesEndRef = useRef(null);
+  const audioContextRef = useRef(null);
+  const animationRef = useRef(null);
+
+  // Auto-scroll to bottom
+  const scrollToBottom = () => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  };
+
+  useEffect(scrollToBottom, [messages, currentResponse]);
+
+  // Initialize UUID
+  useEffect(() => {
+    localStorage.setItem("uuid", userUuid);
+  }, [userUuid]);
+
+  // Initialize client and event listeners
+  useEffect(() => {
+    // Set up event listeners
+    openaiRealtimeClient.on("connected", handleConnected);
+    openaiRealtimeClient.on("disconnected", handleDisconnected);
+    openaiRealtimeClient.on("error", handleError);
+    openaiRealtimeClient.on("message.completed", handleMessageCompleted);
+    openaiRealtimeClient.on("response.text.delta", handleTextDelta);
+    openaiRealtimeClient.on("response.audio.delta", handleAudioDelta);
+    openaiRealtimeClient.on("response.audio.done", handleAudioDone);
+    openaiRealtimeClient.on("speech.started", handleSpeechStarted);
+    openaiRealtimeClient.on("speech.stopped", handleSpeechStopped);
+    openaiRealtimeClient.on("audio.track_received", handleAudioTrackReceived);
+
+    // Cleanup on unmount
+    return () => {
+      openaiRealtimeClient.removeAllListeners();
+      disconnect();
+      if (animationRef.current) {
+        cancelAnimationFrame(animationRef.current);
+      }
+    };
+  }, []);
+
+  // Event handlers
+  const handleConnected = () => {
+    console.log("Connected to OpenAI Realtime API");
+    setConnected(true);
+    setConnecting(false);
+    setError(null);
+
+  };
+
+  const handleDisconnected = () => {
+    setConnected(false);
+    setConnecting(false);
+    setSpeaking(false);
+    setListening(false);
+  };
+
+  const handleError = (error) => {
+    console.error("OpenAI Realtime API error:", error);
+    setError(error.message || "Connection error occurred");
+    setConnecting(false);
+  };
+
+  const handleMessageCompleted = ({ role, text }) => {
+    console.log(`Message completed - ${role}: ${text}`); // Debug log
+
+    const newMessage = {
+      role,
+      text,
+      timestamp: new Date().toISOString(),
+    };
+
+    console.log("Adding message to state:", newMessage); // Debug log
+
+    setMessages((prev) => {
+      const updated = [...prev, newMessage];
+      console.log("Updated messages:", updated); // Debug log
+      return updated;
+    });
+
+    // Extract user name from any message if the user explicitly provides it
+    if (role === "user" && text.length > 0) {
+      extractUserName(text);
+    }
+
+    // Clear current response
+    setCurrentResponse("");
+  };
+
+  // Handle text delta (streaming text as it's generated)
+  const handleTextDelta = (delta) => {
+    console.log(`Text delta: ${delta}`);
+    setCurrentResponse((prev) => prev + delta);
+  };
+
+  const handleAudioDelta = (event) => {
+    setSpeaking(true);
+  };
+
+  const handleAudioDone = () => {
+    setSpeaking(false);
+  };
+
+  const handleSpeechStarted = () => {
+    setListening(true);
+    if (speaking) {
+      setIsInterrupted(true);
+      setTimeout(() => setIsInterrupted(false), 1000);
+    }
+  };
+
+  const handleSpeechStopped = () => {
+    setListening(false);
+  };
+
+  const handleAudioTrackReceived = (stream) => {
+    setupAudioVisualization(stream);
+  };
+
+  // User name extraction
+  const extractUserName = (text) => {
+    const namePhrases = [
+      /my name is (\w+)/i,
+      /i am (\w+)/i,
+      /call me (\w+)/i,
+      /i'm (\w+)/i,
+      /name's (\w+)/i,
+    ];
+
+    let extractedName = "";
+    for (const pattern of namePhrases) {
+      const match = text.match(pattern);
+      if (match) {
+        extractedName = match[1];
+        break;
+      }
+    }
+
+
+    if (extractedName) {
+      const formattedName =
+        extractedName.charAt(0).toUpperCase() +
+        extractedName.slice(1).toLowerCase();
+      setUserName(formattedName);
+      localStorage.setItem("userName", formattedName);
+    }
+  };
+
+  // Audio visualization setup
+  const setupAudioVisualization = (stream) => {
+    try {
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = audioCtx.createAnalyser();
+      const source = audioCtx.createMediaStreamSource(stream);
+
+      analyser.fftSize = 256;
+      source.connect(analyser);
+
+      audioContextRef.current = { audioCtx, analyser };
+      visualizeAudio(analyser);
+    } catch (error) {
+      console.warn("Could not set up audio visualization:", error);
+    }
+  };
+
+  // Audio visualization loop
+  const visualizeAudio = (analyser) => {
+    const bufferLength = analyser.frequencyBinCount;
+    const dataArray = new Uint8Array(bufferLength);
+
+    const animate = () => {
+      if (speaking) {
+        analyser.getByteFrequencyData(dataArray);
+
+        const levels = [];
+        const bands = 12; // Fewer bands for cleaner look
+        const step = Math.floor(bufferLength / bands);
+
+        for (let i = 0; i < bands; i++) {
+          const start = i * step;
+          let sum = 0;
+
+          for (let j = 0; j < step; j++) {
+            sum += dataArray[start + j];
+          }
+
+          levels.push(sum / step / 255);
+        }
+
+        setAudioLevels(levels);
+      } else {
+        setAudioLevels((prev) => prev.map((level) => Math.max(0, level * 0.9)));
+      }
+
+      animationRef.current = requestAnimationFrame(animate);
+    };
+
+    animate();
+  };
+
+  // Connection functions
+  const toggleConnection = async () => {
+    if (connected) {
+      disconnect();
+    } else {
+      await connect();
+    }
+  };
+
+  const connect = async () => {
+    if (connecting || connected) return;
+
+    setConnecting(true);
+    setError(null);
+
+    try {
+      await openaiRealtimeClient.connect(userUuid);
+    } catch (error) {
+      setError(error.message);
+      setConnecting(false);
+    }
+  };
+
+  const disconnect = () => {
+    openaiRealtimeClient.disconnect();
+    if (audioContextRef.current) {
+      audioContextRef.current.audioCtx.close();
+      audioContextRef.current = null;
+    }
+    setAudioLevels([]);
+  };
+
+  // Get status text
+  const getStatusText = () => {
+    if (error) return error;
+    if (connecting) return "Connecting...";
+    if (!connected) return "Ready to chat";
+    if (listening) return "Listening...";
+    if (speaking) return currentResponse ? "AI speaking..." : "AI thinking...";
+    return "Connected";
+  };
+
+  // Get status color
+  const getStatusColor = () => {
+    if (error) return "text-red-500";
+    if (listening) return "text-green-600";
+    if (speaking) return "text-blue-600";
+    if (connected) return "text-emerald-600";
+    return "text-gray-500";
+  };
+
+  return (
+    <div className="min-h-screen bg-gray-50 text-gray-900 flex flex-col">
+      {/* Header */}
+      <div className="bg-white border-b border-gray-200 p-4">
+        <div className="max-w-6xl mx-auto">
+          <h1 className="text-xl font-medium">Mobeus AI Assistant</h1>
+          {userName && (
+            <p className="text-gray-500 text-sm mt-1">
+              Welcome back, {userName}
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* Main Content */}
+      <div className="flex-1 flex max-w-6xl mx-auto w-full">
+        {/* Left Side - User Messages */}
+        <div className="flex-1 p-4">
+          <div className="h-full flex flex-col">
+            <h2 className="text-sm font-medium text-gray-600 mb-3">You</h2>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {messages
+                .filter((msg) => msg.role === "user")
+                .map((message, index) => (
+                  <div key={`user-${index}`} className="flex justify-end">
+                    <div className="bg-blue-500 text-white rounded-lg rounded-br-sm px-3 py-2 max-w-xs text-sm shadow-sm">
+                      <p>{message.text}</p>
+                      <p className="text-blue-100 text-xs mt-1 opacity-75">
+                        {new Date(message.timestamp).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              {/* Show current user input if any interim results */}
+            </div>
+          </div>
+        </div>
+
+        {/* Center - Microphone & Controls */}
+        <div className="w-64 flex flex-col items-center justify-center p-4 bg-white border-x border-gray-200">
+          {/* Audio Visualization */}
+          {speaking && audioLevels.length > 0 && (
+            <div className="mb-6 flex items-end justify-center space-x-1 h-12">
+              {audioLevels.map((level, i) => (
+                <div
+                  key={i}
+                  className="bg-blue-400 w-2 rounded-full transition-all duration-100"
+                  style={{
+                    height: `${Math.max(4, level * 60)}%`,
+                    opacity: speaking ? 1 : 0.3,
+                  }}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Main Microphone Button */}
+          <button
+            onClick={toggleConnection}
+            disabled={connecting}
+            className={`relative w-20 h-20 rounded-full flex items-center justify-center transition-all duration-300 border-2 ${
+              connecting
+                ? "bg-yellow-500 border-yellow-600 cursor-wait"
+                : connected
+                ? listening
+                  ? "bg-green-500 border-green-600 shadow-lg scale-105"
+                  : speaking
+                  ? "bg-blue-500 border-blue-600 shadow-lg"
+                  : "bg-gray-100 border-gray-300 hover:bg-gray-200 shadow-md"
+                : "bg-gray-100 border-gray-300 hover:bg-gray-200"
+            } ${listening || speaking ? "animate-pulse" : ""} ${
+              isInterrupted ? "ring-4 ring-yellow-400" : ""
+            }`}
+          >
+            {/* Microphone Icon */}
+            <svg
+              width="28"
+              height="28"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              className={`${
+                connected && (listening || speaking)
+                  ? "text-white"
+                  : "text-gray-600"
+              }`}
+            >
+              <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+              <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+              <line x1="12" x2="12" y1="19" y2="22" />
+            </svg>
+          </button>
+
+          {/* Status Text */}
+          <div className="mt-4 text-center">
+            <p className={`text-sm font-medium ${getStatusColor()}`}>
+              {getStatusText()}
+            </p>
+            {connected && !error && (
+              <p className="text-xs text-gray-400 mt-1">
+                {listening
+                  ? "Speak naturally"
+                  : speaking
+                  ? "AI is responding"
+                  : "Tap to start talking"}
+              </p>
+            )}
+          </div>
+
+          {/* Error Display */}
+          {error && (
+            <div className="mt-4 p-2 bg-red-50 border border-red-200 rounded-lg text-center max-w-xs">
+              <p className="text-red-600 text-xs">{error}</p>
+            </div>
+          )}
+        </div>
+
+        {/* Right Side - Assistant Messages */}
+        <div className="flex-1 p-4">
+          <div className="h-full flex flex-col">
+            <h2 className="text-sm font-medium text-gray-600 mb-3">
+              Mobeus AI
+            </h2>
+            <div className="flex-1 space-y-2 overflow-y-auto">
+              {messages
+                .filter((msg) => msg.role === "assistant")
+                .map((message, index) => (
+                  <div
+                    key={`assistant-${index}`}
+                    className="flex justify-start"
+                  >
+                    <div className="bg-gray-100 rounded-lg rounded-bl-sm px-3 py-2 max-w-xs text-sm shadow-sm">
+                      <p className="text-gray-800">{message.text}</p>
+                      <p className="text-gray-500 text-xs mt-1 opacity-75">
+                        {new Date(message.timestamp).toLocaleTimeString([], {
+                          hour: "2-digit",
+                          minute: "2-digit",
+                        })}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+
+              {/* Current Response */}
+              {currentResponse && (
+                <div className="flex justify-start">
+                  <div className="bg-gray-100 rounded-lg rounded-bl-sm px-3 py-2 max-w-xs text-sm shadow-sm border border-gray-200 animate-pulse">
+                    <p className="text-gray-800">
+                      {currentResponse}
+                      <span className="inline-block w-1 h-4 bg-gray-400 ml-1 animate-pulse" />
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Auto-scroll target */}
+              <div ref={messagesEndRef} />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Footer */}
+      <div className="bg-white border-t border-gray-200 p-3">
+        <div className="max-w-6xl mx-auto text-center">
+          <p className="text-xs text-gray-400">
+            Powered by OpenAI Realtime API • WebRTC Connection
+            {connected && (
+              <span className="ml-2 inline-flex items-center">
+                <span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1" />
+                Live
+              </span>
+            )}
+          </p>
+
+          {/* Debug info - remove this later */}
+          {process.env.NODE_ENV === "development" && (
+            <details className="mt-2 text-left">
+              <summary className="text-xs text-gray-500 cursor-pointer">
+                Debug Info
+              </summary>
+              <div className="mt-2 p-2 bg-gray-100 rounded text-xs">
+                <p>
+                  <strong>Messages count:</strong> {messages.length}
+                </p>
+                <p>
+                  <strong>Current response:</strong> {currentResponse || "None"}
+                </p>
+                <p>
+                  <strong>Connected:</strong> {connected ? "Yes" : "No"}
+                </p>
+                <p>
+                  <strong>Listening:</strong> {listening ? "Yes" : "No"}
+                </p>
+                <p>
+                  <strong>Speaking:</strong> {speaking ? "Yes" : "No"}
+                </p>
+                <div className="mt-2">
+                  <strong>Messages:</strong>
+                  <pre className="whitespace-pre-wrap text-xs bg-white p-1 mt-1 rounded border">
+                    {JSON.stringify(messages, null, 2)}
+                  </pre>
+                </div>
+              </div>
+            </details>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
