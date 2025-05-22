@@ -56,6 +56,7 @@ This document provides a high-level overview of the project directory layout and
 - **eslint.config.js**    ESLint configuration.
 - **src/**                Application source code (components, pages, state management).
 - **public/**             Static assets (images, icons, favicon).
+- **archive/**            Deprecated or experimental components kept for reference.
 - **index.html**          HTML template and mounting point.
 - **Dockerfile**          Frontend container build.
 
