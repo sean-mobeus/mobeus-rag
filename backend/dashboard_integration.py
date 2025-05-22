@@ -22,24 +22,24 @@ def setup_admin_dashboard(app: FastAPI, prefix: str = "/admin"):
     
     # Try to import main dashboard
     try:
-        from routes.dashboard.main_dashboard import router as main_dashboard_router
+        from stats.main_dashboard import router as main_dashboard_router
         routers_to_include.append(("Main Dashboard", main_dashboard_router))
     except ImportError as e:
         print(f"Warning: Could not import main dashboard: {e}")
         # Try the simple dashboard as fallback
         try:
-            from routes.dashboard.simple_dashboard import router as simple_dashboard_router
+            from stats.simple_dashboard import router as simple_dashboard_router
             routers_to_include.append(("Simple Dashboard", simple_dashboard_router))
         except ImportError as e2:
             print(f"Warning: Could not import simple dashboard: {e2}")
     
     # Try to import other dashboard components
     dashboard_modules = [
-        ("Config Dashboard", "routes.dashboard.config_dashboard"),
-        ("Debug Dashboard", "routes.dashboard.debug_dashboard"),
-        ("RAG Dashboard", "routes.dashboard.rag_dashboard"),
-        ("Tools Dashboard", "routes.dashboard.tools_dashboard"),
-        ("Session Dashboard", "routes.dashboard.session_dashboard")
+        ("Config Dashboard", "stats.config_dashboard"),
+        ("Debug Dashboard", "stats.debug_dashboard"),
+        ("RAG Dashboard", "stats.rag_dashboard"),
+        ("Tools Dashboard", "stats.tools_dashboard"),
+        ("Session Dashboard", "stats.session_dashboard")
     ]
     
     for name, module_path in dashboard_modules:

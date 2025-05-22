@@ -10,20 +10,20 @@ import tempfile
 from openai import OpenAI
 from config import OPENAI_API_KEY, DEBUG_LOG_PATH
 from pydantic import BaseModel
-from rag import query_rag
+from vector.rag import query_rag
 import traceback
 import json
 from typing import Optional
 from io import BytesIO
 from routes import speak_stream
-from routes import streaming_rag
+from chat import streaming_rag
 from routes import user_identity_routes
-from routes import openai_realtime_tokens
+from chat import openai_realtime_tokens
 from memory.session_memory import log_interaction
 # Dashboard imports disabled
-# from routes.dashboard import debug_dashboard
-# from routes.dashboard import config_dashboard
-from routes import webrtc_signaling
+# from stats import debug_dashboard
+# from stats import config_dashboard
+from chat import webrtc_signaling
 
 # Dashboard integration disabled
 # from dashboard_integration import setup_admin_dashboard

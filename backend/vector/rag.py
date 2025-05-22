@@ -5,7 +5,7 @@ from openai import OpenAI
 from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
 from config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL, DEBUG_LOG_PATH
-from agents.tone_engine import get_tone_shaping_chunks
+from chat.agents.tone_engine import get_tone_shaping_chunks
 from memory.session_memory import get_recent_interactions
 from memory.persistent_memory import get_summary
 

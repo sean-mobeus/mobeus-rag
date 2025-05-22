@@ -4,7 +4,7 @@ from fastapi.responses import StreamingResponse
 from tts.streaming import stream_tts_from_openai
 import time
 import asyncio
-from rag import log_debug
+from vector.rag import log_debug
 
 router = APIRouter()
 

@@ -201,7 +201,7 @@ Key behaviors:
 async def search_knowledge_base_tool(request: SearchKnowledgeBaseRequest):
     """Execute knowledge base search for OpenAI Realtime API"""
     try:
-        from rag import retrieve_documents
+        from vector.rag import retrieve_documents
         
         # Perform RAG search
         documents = await retrieve_documents(request.query)
