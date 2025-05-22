@@ -1,41 +1,99 @@
+import os
 import time
 import json
 import datetime
 from openai import OpenAI
 from chromadb import PersistentClient
 from chromadb.utils.embedding_functions import OpenAIEmbeddingFunction
+from typing import cast
+from chromadb.api.types import EmbeddingFunction, Embeddable
 from config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL, DEBUG_LOG_PATH
 from agents.tone_engine import get_tone_shaping_chunks
 from memory.session_memory import get_recent_interactions
 from memory.persistent_memory import get_summary
 
+# Print debug information about the environment
+print(f"🔍 RAG Module Debug: Log path is {DEBUG_LOG_PATH}")
+print(f"🔍 RAG Module Debug: Log directory exists: {os.path.exists(os.path.dirname(DEBUG_LOG_PATH))}")
+
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 chroma_client = PersistentClient(path=CHROMA_DB_DIR)
+# Create and cast embedding function to satisfy type checker requirements
+_embedding_fn = OpenAIEmbeddingFunction(api_key=OPENAI_API_KEY, model_name=EMBED_MODEL)
+_embedding_fn_cast: EmbeddingFunction[Embeddable] = cast(EmbeddingFunction[Embeddable], _embedding_fn)
 collection = chroma_client.get_or_create_collection(
     name="mobeus_knowledge",
-    embedding_function=OpenAIEmbeddingFunction(api_key=OPENAI_API_KEY, model_name=EMBED_MODEL)
+    embedding_function=_embedding_fn_cast
 )
 
-def log_debug(query, chunks, answer, timings):
+# Write a test entry to verify logging works immediately
+try:
+    print(f"💾 Writing test log entry to {DEBUG_LOG_PATH}")
     with open(DEBUG_LOG_PATH, "a") as f:
-        f.write(json.dumps({
+        test_entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "message": "RAG module loaded and logging system initialized"
+        }
+        f.write(json.dumps(test_entry) + "\n")
+    print(f"✅ Test log entry written successfully")
+except Exception as e:
+    print(f"❌ Failed to write test log entry: {e}")
+
+def log_debug(query, chunks, answer, timings):
+    """
+    Write debug logs to the configured debug log file.
+    Ensures the file exists and properly appends without creating duplicates.
+    
+    Args:
+        query: The query being answered
+        chunks: The retrieved document chunks
+        answer: The generated answer
+        timings: Dictionary of timing information
+    """
+    try:
+        print(f"📝 Attempting to log query: '{query[:30]}...' to {DEBUG_LOG_PATH}")
+        # Check if the directory exists and create it if needed
+        log_dir = os.path.dirname(DEBUG_LOG_PATH)
+        if log_dir and not os.path.exists(log_dir):
+            print(f"📁 Creating log directory: {log_dir}")
+            os.makedirs(log_dir, exist_ok=True)
+            
+        # Create the entry to log
+        entry = json.dumps({
             "timestamp": datetime.datetime.now().isoformat(),
             "query": query,
             "top_chunks": chunks,
             "answer": answer,
             "timings": timings
-        }) + "\n")
+        })
+        
+        # Write to the log file, ensuring we append
+        with open(DEBUG_LOG_PATH, "a") as f:
+            f.write(entry + "\n")
+        print(f"✅ Successfully logged query to {DEBUG_LOG_PATH}")   
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to write to debug log: {e}")
 
-def query_rag(query: str, uuid: str = None):
+from typing import Optional
+
+def query_rag(query: str, uuid: Optional[str] = None):
     start_time = time.time()
 
     retrieval_start = time.time()
     results = collection.query(query_texts=[query], n_results=5)
     retrieval_end = time.time()
 
-    retrieved_chunks = results["documents"][0]
-    sources = results["metadatas"][0]
+    documents = results.get("documents")
+    metadatas = results.get("metadatas")
+    if documents and len(documents) > 0 and documents[0] is not None:
+        retrieved_chunks = documents[0]
+    else:
+        retrieved_chunks = []
+    if metadatas and len(metadatas) > 0 and metadatas[0] is not None:
+        sources = metadatas[0]
+    else:
+        sources = []
     context = "\n\n".join(retrieved_chunks)
 
     tone_start = time.time()
@@ -96,13 +154,17 @@ Answer:"""
  
 async def retrieve_documents(query: str):
     results = collection.query(query_texts=[query], n_results=5)
-    texts = results.get("documents", [[]])[0]
-    metadatas = results.get("metadatas", [[]])[0]
+    documents = results.get("documents")
+    texts = documents[0] if documents and len(documents) > 0 and documents[0] is not None else []
+    metadatas_list = results.get("metadatas")
+    metadatas = metadatas_list[0] if metadatas_list and len(metadatas_list) > 0 and metadatas_list[0] is not None else []
     chunks = []
     for idx, text in enumerate(texts):
         meta = metadatas[idx] if idx < len(metadatas) else {}
-        chunk = {"text": text}
+        # Merge text with metadata in a type-safe manner
         if isinstance(meta, dict):
-            chunk.update(meta)
+            chunk = {"text": text, **meta}
+        else:
+            chunk = {"text": text}
         chunks.append(chunk)
     return chunks

@@ -20,12 +20,15 @@ from routes import streaming_rag
 from routes import user_identity_routes
 from routes import openai_realtime_tokens
 from memory.session_memory import log_interaction
-# Dashboard imports disabled
-# from routes.dashboard import debug_dashboard
-# from routes.dashboard import config_dashboard
 from routes import webrtc_signaling
 
+# Dashboard imports
+from routes.dashboard import debug_dashboard
+from routes.dashboard import main_dashboard
+
+
 # Dashboard integration disabled
+# from routes.dashboard import config_dashboard
 # from dashboard_integration import setup_admin_dashboard
 
 # Initialize database
@@ -38,6 +41,14 @@ async def lifespan(app: FastAPI):
         print("✅ FastAPI startup: Database tables initialized")
     else:
         print("⚠️ FastAPI startup: Database initialization failed...")
+    try:
+        from ensure_logs import ensure_log_file_exists
+        if ensure_log_file_exists():
+            print("✅ FastAPI startup: Log file initialized")
+        else:
+            print("⚠️ FastAPI startup: Log file initialization failed")
+    except Exception as e:
+        print(f"⚠️ FastAPI startup: Error initializing logs: {e}")
     
     yield  # Application runs here
     
@@ -59,13 +70,12 @@ app.add_middleware(
 app.include_router(speak_stream.router)
 app.include_router(streaming_rag.router)
 app.include_router(user_identity_routes.router)
-# app.include_router(debug_dashboard.router)
-# app.include_router(config_dashboard.router)  # Dashboard routes disabled
 app.include_router(webrtc_signaling.router)
 app.include_router(openai_realtime_tokens.router)
 
-## Dashboard setup disabled
-# setup_admin_dashboard(app, prefix="/admin")
+# Include dashboard routes with '/admin' prefix
+app.include_router(debug_dashboard.router, prefix="/admin")
+app.include_router(main_dashboard.router, prefix="/admin")
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -140,9 +150,11 @@ async def query_rag_endpoint(payload: QueryRequest):
     try:
         uuid = payload.uuid
         query = payload.query
+        print(f"🔍 API endpoint: Received query: '{query}'")
         log_interaction(uuid, "user", query)  # ✅ Log user message
         response = query_rag(query, uuid)
         log_interaction(uuid, "assistant", response["answer"])  # ✅ Log assistant reply
+        print(f"✅ API endpoint: Successfully processed query")
         return response
 
     except Exception as e:
@@ -151,12 +163,13 @@ async def query_rag_endpoint(payload: QueryRequest):
         # Return proper HTTP error for front-end to catch
         raise HTTPException(status_code=500, detail=str(e))
     
-## Admin dashboard endpoint disabled
-## @app.get("/admin-dashboard")
-## async def redirect_to_admin_dashboard():
-##     """Redirect to the new admin dashboard"""
-##     from fastapi.responses import RedirectResponse
-##     return RedirectResponse(url="/admin/")
+# Redirect for admin dashboard
+@app.get("/admin")
+async def redirect_to_admin_dashboard():
+    """Redirect to the admin dashboard"""
+    from fastapi.responses import RedirectResponse
+    return RedirectResponse(url="/admin/")
+
 
 # Debug endpoint to list all routes
 @app.get("/debug/routes")

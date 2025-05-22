@@ -19,6 +19,7 @@ chromadb>=0.4.6
 
 # System monitoring
 psutil>=5.9.5
+pkg_resources>=0.0.0
 
 # Utilities
 python-dotenv>=1.0.0

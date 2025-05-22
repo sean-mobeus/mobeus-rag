@@ -4,11 +4,9 @@ chroma/
 debug_log.jsonl
 rag_debug_fresh.jsonl
 rag_debug.jsonl
-nginx/nginx.confrag_debug_fresh.jsonl
+nginx/nginx.conf
 docker-compose.override.yml
 nginx/dev.conf
-nginx/zz_dev.conf
-nginx/nginx.conf
 nginx/zz_dev.conf
 .DS_Store
 
