@@ -18,7 +18,8 @@ from io import BytesIO
 from routes import speak_stream
 from chat import streaming_rag
 from routes import user_identity_routes
-from chat import openai_realtime_tokens
+from routes import openai_realtime_tokens
+from routes import realtime_chat
 from memory.session_memory import log_interaction
 # Dashboard imports disabled
 # from stats import debug_dashboard
@@ -64,6 +65,7 @@ app.include_router(user_identity_routes.router)
 # app.include_router(config_dashboard.router)  # Dashboard routes disabled
 app.include_router(webrtc_signaling.router)
 app.include_router(openai_realtime_tokens.router)
+app.include_router(realtime_chat.router)
 
 ## Dashboard setup disabled
 # setup_admin_dashboard(app, prefix="/admin")
