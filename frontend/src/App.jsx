@@ -1,7 +1,7 @@
 // frontend/src/App.jsx
 import React from "react";
 
-import OpenAIRealtimeAssistant from "/src/components/OpenAIRealTimeAssistant.jsx";
+import OpenAIRealtimeAssistant from "/src/components/OpenAIRealtimeAssistant.jsx";
 
 function App() {
   return (
