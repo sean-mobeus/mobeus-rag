@@ -1,5 +1,6 @@
 // OpenAIRealtimeClient.js - WebRTC client for OpenAI Realtime API
 import { EventEmitter } from "events";
+import { BACKEND_BASE_URL } from "../config";
 
 /**
  * WebRTC client for OpenAI Realtime API
@@ -33,7 +34,7 @@ class OpenAIRealtimeClient extends EventEmitter {
     this.voice = "alloy";
 
     // Our backend base URL
-    this.backendUrl = window.location.origin;
+    this.backendUrl = BACKEND_BASE_URL;
 
     // Track audio transcript across events
     this.accumulatedAudioTranscript = "";
@@ -537,7 +538,7 @@ class OpenAIRealtimeClient extends EventEmitter {
 
       if (functionName === "search_knowledge_base") {
         // Call our RAG endpoint - use absolute URL to backend
-        const backendUrl = window.location.origin.replace(":5173", ":8010");
+        const backendUrl = BACKEND_BASE_URL;
         const response = await fetch(
           `${backendUrl}/api/realtime/tools/search_knowledge_base`,
           {
@@ -553,7 +554,7 @@ class OpenAIRealtimeClient extends EventEmitter {
         console.log("Search result:", result);
       } else if (functionName === "update_user_memory") {
         // Call our memory update endpoint - use absolute URL to backend
-        const backendUrl = window.location.origin.replace(":5173", ":8010");
+        const backendUrl = BACKEND_BASE_URL;
         const response = await fetch(
           `${backendUrl}/api/realtime/tools/update_user_memory`,
           {
@@ -660,11 +661,8 @@ class OpenAIRealtimeClient extends EventEmitter {
     if (!this.userUuid) return;
 
     try {
-      // Send interaction logs to backend (development port 8010)
-      const logUrl = window.location.origin.replace(
-        ":5173",
-        ":8010"
-      );
+      // Send interaction logs to our backend
+      const logUrl = BACKEND_BASE_URL;
       const response = await fetch(`${logUrl}/api/user-identity/log-interaction`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
