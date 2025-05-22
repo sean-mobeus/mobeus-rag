@@ -66,7 +66,7 @@ async def stream_query(request: Request):
     start_time = time.time()
     
     # Import your existing retrieval function
-    from rag import retrieve_documents
+    from vector.rag import retrieve_documents
     
     # Run retrieval
     retrieval_start = time.time()

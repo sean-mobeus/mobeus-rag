@@ -24,24 +24,26 @@ This document provides a high-level overview of the project directory layout and
 - **main.py**             FastAPI app entrypoint, registers routes and middleware.
 - **config.py**           Static and environment configuration.
 - **runtime_config.py**   Runtime configuration loader (handles dynamic settings).
-- **rag.py**              Retrieval-Augmented Generation logic (queries vector store and LLM).
+- **vector/**             Vector storage utilities and RAG logic.
+  - *rag.py*              Retrieval-Augmented Generation implementation.
+  - **ingest/**           Utilities for populating the vector store.
+    - *chunk_and_ingest.py*   Splits source documents into chunks and ingests them.
+    - *ingest_tone.py*        Custom ingestion for tone-shaper data.
 - **memory/**             Session and persistent memory management modules.
   - *session_memory.py*     In-memory session-scoped memory for conversation state.
   - *persistent_memory.py*  Persistent memory storage across sessions.
   - *user_identity.py*      User identity and profile handling.
-- **ingest/**             Data ingestion scripts for populating/updating the vector database.
-  - *chunk_and_ingest.py*   Splits source documents into chunks and ingests them.
-  - *ingest_tone.py*        Custom ingestion for tone-shaper data.
-- **agents/**             Custom agent logic.
-  - *prompt_orchestrator.py* Orchestrates prompts sent to the LLM.
-  - *tone_engine.py*         Manages tone transformations.
-- **routes/**             FastAPI router modules.
-  - *streaming_rag.py*        Streaming RAG endpoint.
+- **chat/**               Chat pipeline and realtime communication.
+  - **agents/**           Prompt orchestration and tone shaping.
+  - *streaming_rag.py*    Streaming RAG endpoint.
+  - *openai_realtime_tokens.py*  Realtime session helpers.
+  - *webrtc_signaling.py* WebRTC signaling implementation.
+- **routes/**             Miscellaneous FastAPI router modules.
   - *speak_stream.py*         TTS streaming endpoint.
   - *user_identity_routes.py* User identity REST endpoints.
-  └── **dashboard/**          Dashboards for runtime configuration and debugging.
-      - *config_dashboard.py* UI & API for runtime config.
-      - *debug_dashboard.py*  Debug logs and metrics dashboard.
+- **stats/**              Dashboards for runtime configuration and debugging.
+  - *config_dashboard.py* UI & API for runtime config.
+  - *debug_dashboard.py*  Debug logs and metrics dashboard.
 - **tts/**                Text-to-speech implementation.
   - *streaming.py*          Uses OpenAI TTS APIs.
 - **requirements.txt**    Python dependencies.
