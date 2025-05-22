@@ -58,6 +58,7 @@ app.add_middleware(
 # Include existing routes (dashboards disabled)
 app.include_router(speak_stream.router)
 app.include_router(streaming_rag.router)
+# Routes for user identity management (including log-interaction endpoint)
 app.include_router(user_identity_routes.router)
 # app.include_router(debug_dashboard.router)
 # app.include_router(config_dashboard.router)  # Dashboard routes disabled
