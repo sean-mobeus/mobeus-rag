@@ -706,7 +706,8 @@ def render_debug_dashboard(entries, system_stats, summary, limit, filter):
                                         <p>{sources_display}</p>
                                         
                                         <h4>Answer</h4>
-                                        <pre>{entry.get("answer", "N/A")}</pre>
+                                        <div style="max-height: 300px; overflow-y: auto; background-color: var(--gray-100); padding: 0.75rem; border-radius: 0.375rem; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size: 0.875rem; white-space: pre-wrap; word-break: break-word;">
+                                        {entry.get("answer", "N/A")}
                                     </div>
                                 </details>
                             </td>

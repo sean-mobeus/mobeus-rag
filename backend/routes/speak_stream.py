@@ -8,8 +8,9 @@ from vector.rag import log_debug
 
 router = APIRouter()
 
+
 @router.get("/api/speak-stream")
-def speak_stream(text: str = Query(...), voice: str = "nova", background_tasks: BackgroundTasks = None):
+def speak_stream(background_tasks: BackgroundTasks, text: str = Query(...), voice: str = "nova"):
     """
     Stream audio from OpenAI TTS using MP3 format with optimized buffering.
     

@@ -1,6 +1,6 @@
 // frontend/src/components/OpenAIRealtimeAssistant.jsx
 import React, { useState, useEffect, useRef } from "react";
-import openaiRealtimeClient from "./OpenAIRealtimeClient";
+import webSocketRealtimeClient from "./WebSocketRealtimeClient";
 
 /**
  * OpenAI Realtime Voice Assistant - Polished UI
@@ -33,6 +33,7 @@ export default function OpenAIRealtimeAssistant() {
   const messagesEndRef = useRef(null);
   const audioContextRef = useRef(null);
   const animationRef = useRef(null);
+  const clientRef = useRef(webSocketRealtimeClient);
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -46,38 +47,59 @@ export default function OpenAIRealtimeAssistant() {
     localStorage.setItem("uuid", userUuid);
   }, [userUuid]);
 
+  useEffect(() => {
+    localStorage.setItem("userName", userName);
+  }, [userName]);
+
   // Initialize client and event listeners
   useEffect(() => {
-    // Set up event listeners
-    openaiRealtimeClient.on("connected", handleConnected);
-    openaiRealtimeClient.on("disconnected", handleDisconnected);
-    openaiRealtimeClient.on("error", handleError);
-    openaiRealtimeClient.on("message.completed", handleMessageCompleted);
-    openaiRealtimeClient.on("response.text.delta", handleTextDelta);
-    openaiRealtimeClient.on("response.audio.delta", handleAudioDelta);
-    openaiRealtimeClient.on("response.audio.done", handleAudioDone);
-    openaiRealtimeClient.on("speech.started", handleSpeechStarted);
-    openaiRealtimeClient.on("speech.stopped", handleSpeechStopped);
-    openaiRealtimeClient.on("audio.track_received", handleAudioTrackReceived);
+    const client = clientRef.current;
+
+    // Set up event listeners using the working logic
+    client.on("connected", handleConnected);
+    client.on("session.created", handleSessionCreated);
+    client.on("disconnected", handleDisconnected);
+    client.on("error", handleError);
+    client.on("message.completed", handleMessageCompleted);
+    client.on("response.text.delta", handleTextDelta);
+    client.on("speech.started", handleSpeechStarted);
+    client.on("speech.stopped", handleSpeechStopped);
+    client.on("response.audio.delta", handleAudioDelta);
+    client.on("response.audio.done", handleAudioDone);
 
     // Cleanup on unmount
     return () => {
-      openaiRealtimeClient.removeAllListeners();
-      disconnect();
+      client.removeAllListeners();
+      client.disconnect();
       if (animationRef.current) {
         cancelAnimationFrame(animationRef.current);
       }
     };
   }, []);
 
-  // Event handlers
+  // Event handlers - using working logic
   const handleConnected = () => {
-    console.log("Connected to OpenAI Realtime API");
+    console.log("Connected to backend");
+    setConnecting(true); // Will be set to false by session.created
+  };
+
+  async function handleSessionCreated(session) {
+    console.log("Session ready:", session);
     setConnected(true);
     setConnecting(false);
     setError(null);
 
-  };
+    // Store audio context reference
+    audioContextRef.current = clientRef.current.audioContext;
+
+    // Resume audio context on user gesture (required by browsers)
+    if (audioContextRef.current) {
+      await audioContextRef.current.resume();
+      console.log("🎧 AudioContext resumed");
+    }
+
+    setListening(true);
+  }
 
   const handleDisconnected = () => {
     setConnected(false);
@@ -87,13 +109,13 @@ export default function OpenAIRealtimeAssistant() {
   };
 
   const handleError = (error) => {
-    console.error("OpenAI Realtime API error:", error);
-    setError(error.message || "Connection error occurred");
+    console.error("Client error:", error);
+    setError(error.toString());
     setConnecting(false);
   };
 
   const handleMessageCompleted = ({ role, text }) => {
-    console.log(`Message completed - ${role}: ${text}`); // Debug log
+    console.log(`Message completed - ${role}: ${text}`);
 
     const newMessage = {
       role,
@@ -101,13 +123,7 @@ export default function OpenAIRealtimeAssistant() {
       timestamp: new Date().toISOString(),
     };
 
-    console.log("Adding message to state:", newMessage); // Debug log
-
-    setMessages((prev) => {
-      const updated = [...prev, newMessage];
-      console.log("Updated messages:", updated); // Debug log
-      return updated;
-    });
+    setMessages((prev) => [...prev, newMessage]);
 
     // Extract user name from any message if the user explicitly provides it
     if (role === "user" && text.length > 0) {
@@ -120,16 +136,24 @@ export default function OpenAIRealtimeAssistant() {
 
   // Handle text delta (streaming text as it's generated)
   const handleTextDelta = (delta) => {
-    console.log(`Text delta: ${delta}`);
     setCurrentResponse((prev) => prev + delta);
   };
 
   const handleAudioDelta = (event) => {
     setSpeaking(true);
+    // Simple audio visualization - create random-ish levels based on audio activity
+    if (speaking) {
+      const levels = Array.from(
+        { length: 12 },
+        () => Math.random() * 0.7 + 0.3
+      );
+      setAudioLevels(levels);
+    }
   };
 
   const handleAudioDone = () => {
     setSpeaking(false);
+    setListening(true);
   };
 
   const handleSpeechStarted = () => {
@@ -141,11 +165,7 @@ export default function OpenAIRealtimeAssistant() {
   };
 
   const handleSpeechStopped = () => {
-    setListening(false);
-  };
-
-  const handleAudioTrackReceived = (stream) => {
-    setupAudioVisualization(stream);
+    setListening(true); // Keep listening for next input
   };
 
   // User name extraction
@@ -167,7 +187,6 @@ export default function OpenAIRealtimeAssistant() {
       }
     }
 
-
     if (extractedName) {
       const formattedName =
         extractedName.charAt(0).toUpperCase() +
@@ -177,57 +196,18 @@ export default function OpenAIRealtimeAssistant() {
     }
   };
 
-  // Audio visualization setup
-  const setupAudioVisualization = (stream) => {
-    try {
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const analyser = audioCtx.createAnalyser();
-      const source = audioCtx.createMediaStreamSource(stream);
-
-      analyser.fftSize = 256;
-      source.connect(analyser);
-
-      audioContextRef.current = { audioCtx, analyser };
-      visualizeAudio(analyser);
-    } catch (error) {
-      console.warn("Could not set up audio visualization:", error);
-    }
-  };
-
   // Audio visualization loop
-  const visualizeAudio = (analyser) => {
-    const bufferLength = analyser.frequencyBinCount;
-    const dataArray = new Uint8Array(bufferLength);
-
-    const animate = () => {
-      if (speaking) {
-        analyser.getByteFrequencyData(dataArray);
-
-        const levels = [];
-        const bands = 12; // Fewer bands for cleaner look
-        const step = Math.floor(bufferLength / bands);
-
-        for (let i = 0; i < bands; i++) {
-          const start = i * step;
-          let sum = 0;
-
-          for (let j = 0; j < step; j++) {
-            sum += dataArray[start + j];
-          }
-
-          levels.push(sum / step / 255);
-        }
-
-        setAudioLevels(levels);
-      } else {
+  useEffect(() => {
+    if (!speaking) {
+      // Fade out audio levels when not speaking
+      const fadeOut = () => {
         setAudioLevels((prev) => prev.map((level) => Math.max(0, level * 0.9)));
-      }
+      };
 
-      animationRef.current = requestAnimationFrame(animate);
-    };
-
-    animate();
-  };
+      const interval = setInterval(fadeOut, 50);
+      return () => clearInterval(interval);
+    }
+  }, [speaking]);
 
   // Connection functions
   const toggleConnection = async () => {
@@ -245,17 +225,17 @@ export default function OpenAIRealtimeAssistant() {
     setError(null);
 
     try {
-      await openaiRealtimeClient.connect(userUuid);
+      await clientRef.current.connect(userUuid);
     } catch (error) {
-      setError(error.message);
+      setError(error.toString());
       setConnecting(false);
     }
   };
 
   const disconnect = () => {
-    openaiRealtimeClient.disconnect();
+    clientRef.current.disconnect();
     if (audioContextRef.current) {
-      audioContextRef.current.audioCtx.close();
+      audioContextRef.current.close();
       audioContextRef.current = null;
     }
     setAudioLevels([]);
@@ -316,7 +296,6 @@ export default function OpenAIRealtimeAssistant() {
                     </div>
                   </div>
                 ))}
-              {/* Show current user input if any interim results */}
             </div>
           </div>
         </div>
@@ -452,7 +431,7 @@ export default function OpenAIRealtimeAssistant() {
       <div className="bg-white border-t border-gray-200 p-3">
         <div className="max-w-6xl mx-auto text-center">
           <p className="text-xs text-gray-400">
-            Powered by OpenAI Realtime API • WebRTC Connection
+            Powered by OpenAI Realtime API • WebSocket Connection
             {connected && (
               <span className="ml-2 inline-flex items-center">
                 <span className="w-1.5 h-1.5 bg-green-400 rounded-full mr-1" />
