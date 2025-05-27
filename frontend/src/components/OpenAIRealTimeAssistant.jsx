@@ -106,16 +106,24 @@ export default function OpenAIRealtimeAssistant() {
     setConnecting(false);
     setSpeaking(false);
     setListening(false);
+    // Clear any residual errors on disconnect
+    setError(null);
   };
 
   const handleError = (error) => {
     console.error("Client error:", error);
-    setError(error.toString());
+    const errMsg =
+      typeof error === "string"
+        ? error
+        : error && error.message
+        ? error.message
+        : JSON.stringify(error);
+    setError(errMsg);
     setConnecting(false);
   };
 
   const handleMessageCompleted = ({ role, text }) => {
-    console.log(`Message completed - ${role}: ${text}`);
+    console.log(`UI: Message completed - role=${role}, text=${text}`);
 
     const newMessage = {
       role,
@@ -157,11 +165,22 @@ export default function OpenAIRealtimeAssistant() {
   };
 
   const handleSpeechStarted = () => {
-    setListening(true);
+    console.log("🎤 User speech started - interrupting assistant");
+
+    // Immediately stop speaking and show interruption feedback
     if (speaking) {
+      setSpeaking(false);
       setIsInterrupted(true);
-      setTimeout(() => setIsInterrupted(false), 1000);
+      // Clear current response since it was interrupted
+      setCurrentResponse("");
+      // Clear audio levels
+      setAudioLevels([]);
+
+      // Reset interruption indicator after a moment
+      setTimeout(() => setIsInterrupted(false), 1500);
     }
+
+    setListening(true);
   };
 
   const handleSpeechStopped = () => {
@@ -209,18 +228,37 @@ export default function OpenAIRealtimeAssistant() {
     }
   }, [speaking]);
 
-  // Connection functions
+  // Connection/interruption toggle
   const toggleConnection = async () => {
-    if (connected) {
-      disconnect();
-    } else {
+    console.log(
+      `UI: toggleConnection called - connected=${connected}, connecting=${connecting}, speaking=${speaking}`
+    );
+    if (!connected) {
+      console.log("UI: initiating connection");
       await connect();
+    } else if (speaking) {
+      console.log("UI: manually interrupting assistant");
+      clientRef.current.cancelResponse();
+      setSpeaking(false);
+      setCurrentResponse("");
+      setAudioLevels([]);
+      setIsInterrupted(true);
+      setTimeout(() => setIsInterrupted(false), 1000);
+    } else {
+      console.log("UI: disconnecting client");
+      disconnect();
     }
   };
 
   const connect = async () => {
-    if (connecting || connected) return;
+    if (connecting || connected) {
+      console.log(
+        `UI: connect() skipped (connecting=${connecting}, connected=${connected})`
+      );
+      return;
+    }
 
+    console.log("UI: connect() initiating");
     setConnecting(true);
     setError(null);
 
@@ -233,27 +271,45 @@ export default function OpenAIRealtimeAssistant() {
   };
 
   const disconnect = () => {
+    console.log("UI: disconnect() called");
     clientRef.current.disconnect();
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      // Only close if not already closed to avoid InvalidStateError
+      if (audioContextRef.current.state !== "closed") {
+        audioContextRef.current
+          .close()
+          .catch((err) => console.warn("AudioContext close error:", err));
+      }
       audioContextRef.current = null;
     }
     setAudioLevels([]);
   };
 
-  // Get status text
+  // Get status text (always returns a string)
   const getStatusText = () => {
-    if (error) return error;
-    if (connecting) return "Connecting...";
-    if (!connected) return "Ready to chat";
-    if (listening) return "Listening...";
-    if (speaking) return currentResponse ? "AI speaking..." : "AI thinking...";
-    return "Connected";
+    let status;
+    if (error) {
+      status = error;
+    } else if (connecting) {
+      status = "Connecting...";
+    } else if (!connected) {
+      status = "Ready to chat";
+    } else if (isInterrupted) {
+      status = "Interrupted - listening...";
+    } else if (listening) {
+      status = "Listening...";
+    } else if (speaking) {
+      status = currentResponse ? "AI speaking..." : "AI thinking...";
+    } else {
+      status = "Connected";
+    }
+    return typeof status === "string" ? status : JSON.stringify(status);
   };
 
   // Get status color
   const getStatusColor = () => {
     if (error) return "text-red-500";
+    if (isInterrupted) return "text-yellow-600";
     if (listening) return "text-green-600";
     if (speaking) return "text-blue-600";
     if (connected) return "text-emerald-600";
@@ -303,12 +359,14 @@ export default function OpenAIRealtimeAssistant() {
         {/* Center - Microphone & Controls */}
         <div className="w-64 flex flex-col items-center justify-center p-4 bg-white border-x border-gray-200">
           {/* Audio Visualization */}
-          {speaking && audioLevels.length > 0 && (
+          {(speaking || audioLevels.length > 0) && (
             <div className="mb-6 flex items-end justify-center space-x-1 h-12">
               {audioLevels.map((level, i) => (
                 <div
                   key={i}
-                  className="bg-blue-400 w-2 rounded-full transition-all duration-100"
+                  className={`w-2 rounded-full transition-all duration-100 ${
+                    speaking ? "bg-blue-400" : "bg-gray-300"
+                  }`}
                   style={{
                     height: `${Math.max(4, level * 60)}%`,
                     opacity: speaking ? 1 : 0.3,
@@ -333,7 +391,7 @@ export default function OpenAIRealtimeAssistant() {
                   : "bg-gray-100 border-gray-300 hover:bg-gray-200 shadow-md"
                 : "bg-gray-100 border-gray-300 hover:bg-gray-200"
             } ${listening || speaking ? "animate-pulse" : ""} ${
-              isInterrupted ? "ring-4 ring-yellow-400" : ""
+              isInterrupted ? "ring-4 ring-yellow-400 ring-opacity-75" : ""
             }`}
           >
             {/* Microphone Icon */}
@@ -365,7 +423,9 @@ export default function OpenAIRealtimeAssistant() {
             </p>
             {connected && !error && (
               <p className="text-xs text-gray-400 mt-1">
-                {listening
+                {isInterrupted
+                  ? "Interrupted - continue speaking"
+                  : listening
                   ? "Speak naturally"
                   : speaking
                   ? "AI is responding"
@@ -461,6 +521,9 @@ export default function OpenAIRealtimeAssistant() {
                 </p>
                 <p>
                   <strong>Speaking:</strong> {speaking ? "Yes" : "No"}
+                </p>
+                <p>
+                  <strong>Interrupted:</strong> {isInterrupted ? "Yes" : "No"}
                 </p>
                 <div className="mt-2">
                   <strong>Messages:</strong>

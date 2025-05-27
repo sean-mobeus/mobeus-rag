@@ -41,7 +41,7 @@ def _set_summary_impl(uuid: str, summary: str):
 def set_summary(uuid: str, summary: str):
     """
     Set or update long-term summary for a user/session.
-    This replaces any existing summary with the new one.
+    We should not replace existing summaries instead store them as new entries with same UUID.
     """
     return execute_db_operation(_set_summary_impl, uuid, summary)
 

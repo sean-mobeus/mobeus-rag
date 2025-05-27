@@ -1,18 +1,15 @@
-# Modified main.py with debug dashboard enabled
+# Cleaned main.py - Legacy POCs removed
 import os
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.background import BackgroundTask
-import uuid
 import tempfile
 from openai import OpenAI
-from config import OPENAI_API_KEY, DEBUG_LOG_PATH
+from config import OPENAI_API_KEY
 from pydantic import BaseModel
 from vector.rag import query_rag
 import traceback
-import json
 from typing import Optional
 from io import BytesIO
 from routes import speak_stream
@@ -22,11 +19,12 @@ from chat import openai_realtime_tokens
 from routes import realtime_chat
 from memory.session_memory import log_interaction
 import logging
+import runtime_config
 
-# Enable debug dashboard
+# Enable dashboards
 from stats.debug_dashboard import router as debug_dashboard_router
-
-from chat import webrtc_signaling
+from stats.config_dashboard import router as config_dashboard_router
+from stats.main_dashboard import router as main_dashboard_router
 
 logging.basicConfig(level=logging.INFO)
 
@@ -62,13 +60,12 @@ app.include_router(realtime_chat.router)
 app.include_router(speak_stream.router)
 app.include_router(streaming_rag.router)
 app.include_router(user_identity_routes.router)
-app.include_router(webrtc_signaling.router)
 app.include_router(openai_realtime_tokens.router)
 
-
-
-# Enable debug dashboard with /admin prefix
-app.include_router(debug_dashboard_router, prefix="/admin")
+# Enable dashboards with /admin prefix
+app.include_router(main_dashboard_router, prefix="/admin")      # /admin/ (main dashboard)
+app.include_router(debug_dashboard_router, prefix="/admin")     # /admin/debug
+app.include_router(config_dashboard_router, prefix="/admin")    # /admin/config
 
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
@@ -82,42 +79,14 @@ class QueryRequest(BaseModel):
     uuid: str
     query: str
 
-class VoiceQueryRequest(BaseModel):
-    uuid: str
-
-
 @app.get("/test")
 async def test_endpoint():
     return {"message": "Server is running"}
 
-
-@app.post("/api/voice-query")
-async def voice_query(file: UploadFile = File(...), uuid: Optional[str] = None):
-    if not uuid:
-        raise HTTPException(status_code=400, detail="UUID is required")
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
-        tmp.write(await file.read())
-        tmp_path = tmp.name
-
-    transcript = openai_client.audio.transcriptions.create(
-        model="whisper-1",
-        file=open(tmp_path, "rb")
-    ).text
-
-    from memory.session_memory import log_interaction
-    log_interaction(uuid, "user", transcript)
-
-    response = query_rag(transcript, uuid)
-    log_interaction(uuid, "assistant", response["answer"])
-
-    return {
-        "transcript": transcript,
-        **response
-    }
-
+# Keep this for non-realtime TTS if needed
 @app.post("/api/speak")
 async def speak_text(payload: SpeakRequest):
+    tts_voice = runtime_config.get("TTS_VOICE", "nova")
     tts_input = payload.text or payload.query
     if not tts_input:
         raise HTTPException(status_code=422, detail="Missing 'text' or 'query' in payload")
@@ -126,7 +95,7 @@ async def speak_text(payload: SpeakRequest):
         print(f"🗣 Generating TTS for: {tts_input}")
         speech_response = openai_client.audio.speech.create(
             model="tts-1",
-            voice="nova",
+            voice=tts_voice,
             input=tts_input
         )
         mp3_stream = BytesIO(speech_response.read())
@@ -137,31 +106,23 @@ async def speak_text(payload: SpeakRequest):
         print(f"❌ TTS error: {e}")
         return {"error": str(e)}
 
-
+# Keep this for non-realtime RAG queries if needed
 @app.post("/api/query")
 async def query_rag_endpoint(payload: QueryRequest):
     try:
         uuid = payload.uuid
         query = payload.query
-        log_interaction(uuid, "user", query)  # ✅ Log user message
+        log_interaction(uuid, "user", query)
         response = query_rag(query, uuid)
-        log_interaction(uuid, "assistant", response["answer"])  # ✅ Log assistant reply
+        log_interaction(uuid, "assistant", response["answer"])
         return response
 
     except Exception as e:
         print("❌ Exception occurred during RAG query:")
         traceback.print_exc()
-        # Return proper HTTP error for front-end to catch
         raise HTTPException(status_code=500, detail=str(e))
 
-# Simple admin dashboard redirect
-@app.get("/admin")
-async def redirect_to_debug():
-    """Redirect to debug dashboard for now"""
-    from fastapi.responses import RedirectResponse
-    return RedirectResponse(url="/admin/debug")
-
-# Debug endpoint to list all routes
+# Debug endpoints - keep for troubleshooting
 @app.get("/debug/routes")
 async def list_routes():
     routes = []
@@ -183,7 +144,6 @@ async def debug_chroma_info():
         count = collection.count()
         sample_results = collection.get(limit=5)
         
-        # Fix the optional subscripting
         documents = sample_results.get("documents") if sample_results else None
         metadatas = sample_results.get("metadatas") if sample_results else None
         
@@ -203,7 +163,6 @@ async def debug_test_search(q: str = "Mobeus"):
     try:
         results = collection.query(query_texts=[q], n_results=5)
         
-        # Safe handling of potentially None results
         documents = results.get("documents") if results else None
         metadatas = results.get("metadatas") if results else None
         
@@ -213,8 +172,20 @@ async def debug_test_search(q: str = "Mobeus"):
         return {
             "query": q,
             "found_documents": len(doc_list),
-            "documents": doc_list[:2],  # First 2 docs
+            "documents": doc_list[:2],
             "metadatas": meta_list[:2]
         }
     except Exception as e:
         return {"error": str(e)}
+
+# Configuration endpoint for debugging
+@app.get("/debug/config")
+async def debug_config():
+    """Debug current configuration values"""
+    return {
+        "current_config": runtime_config.all_config(),
+        "memory_limit": runtime_config.get("SESSION_MEMORY_CHAR_LIMIT"),
+        "gpt_model": runtime_config.get("GPT_MODEL"),
+        "realtime_model": runtime_config.get("REALTIME_MODEL"),
+        "realtime_voice": runtime_config.get("REALTIME_VOICE")
+    }

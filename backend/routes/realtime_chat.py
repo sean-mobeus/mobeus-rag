@@ -9,16 +9,19 @@ import threading
 import queue
 from typing import Optional
 import sys
+import runtime_config
 
 from config import OPENAI_API_KEY
 from vector.rag import log_debug, retrieve_documents
 from memory.persistent_memory import append_to_summary
-
+from memory.session_memory import log_interaction, get_all_session_memory
+from memory.persistent_memory import get_summary
 
 logging.basicConfig(level=logging.DEBUG)
 print("🖐️  LOADED /app/routes/realtime_chat.py")
 
-websocket.enableTrace(True)
+# Disable low-level websocket-client trace logs to avoid audio data spam
+# websocket.enableTrace(False)
 
 router = APIRouter()
 
@@ -26,30 +29,29 @@ async def execute_tool(name: str, args: dict, user_uuid: Optional[str]):
     """Handle tool execution server-side."""
     if name == "search_knowledge_base":
         query = args.get("query", "")
-        print(f"🔍 DEBUG: Tool called with query: '{query}'")
+        print(f"🔍 Tool called: search_knowledge_base with query: '{query}'")
         
         import time
         start_time = time.time()
         docs = await retrieve_documents(query)
         end_time = time.time()
         
-        print(f"🔍 DEBUG: Retrieved {len(docs)} documents")
+        print(f"🔍 Retrieved {len(docs)} documents")
         if docs:
-            print(f"🔍 DEBUG: First doc preview: {docs[0].get('text', '')[:100]}...")
+            print(f"🔍 First doc preview: {docs[0].get('text', '')[:100]}...")
         
-        # Fix timing data format to match dashboard expectations
         timing_data = {
             "total": end_time - start_time,
-            "retrieval": end_time - start_time,  # For realtime, retrieval = total
-            "gpt": 0.0,  # No GPT call in tool execution
+            "retrieval": end_time - start_time,
+            "gpt": 0.0,
             "tool": name
         }
         
         if docs:
             formatted_docs = "\n\n---\n\n".join([f"Document {i+1}:\n{doc.get('text', '')}" for i, doc in enumerate(docs[:3])])
-            answer_text = f"Found {len(docs)} relevant documents via realtime search.\n\n{formatted_docs}"
+            answer_text = f"Found {len(docs)} relevant documents about Mobeus.\n\n{formatted_docs}"
         else:
-            answer_text = "Found 0 relevant documents via realtime search."
+            answer_text = "No relevant documents found in the Mobeus knowledge base."
         
         log_debug(query, docs[:3], answer_text, timing_data)
         
@@ -58,20 +60,21 @@ async def execute_tool(name: str, args: dict, user_uuid: Optional[str]):
             for d in docs[:3]
         ]
         return {"results": results, "query": query, "total_results": len(docs)}
+        
     elif name == "update_user_memory":
         uuid = args.get("user_uuid") or user_uuid
         if not isinstance(uuid, str) or not uuid:
             return {"error": "Missing or invalid user_uuid"}
         append_to_summary(uuid, args.get("information", ""))
         return {"success": True}
+        
     return {"error": f"Unknown tool {name}"}
 
 class OpenAIWebSocketClient:
     """WebSocket client using websocket-client library (official OpenAI example)"""
     
-    def __init__(self, api_key: str, instructions: str = "", user_uuid: str = ""):
+    def __init__(self, api_key: str, user_uuid: str = ""):
         self.api_key = api_key
-        self.instructions = instructions
         self.user_uuid = user_uuid
         self.ws = None
         self.connected = False
@@ -80,11 +83,13 @@ class OpenAIWebSocketClient:
         self.incoming_queue = queue.Queue()
         self.outgoing_queue = queue.Queue()
         
+        # Track RAG injection to prevent duplicates
+        self.last_rag_injection_id: Optional[str] = None
+        
     def connect(self):
         """Connect to OpenAI using official websocket-client library"""
         url = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
         
-        # Official format from OpenAI docs
         headers = [
             f"Authorization: Bearer {self.api_key}",
             "OpenAI-Beta: realtime=v1"
@@ -119,78 +124,161 @@ class OpenAIWebSocketClient:
     def on_open(self, ws):
         print("✅ Connected to OpenAI WebSocket")
         self.connected = True
+    
+        # Get config values
+        realtime_model = runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
+        realtime_voice = runtime_config.get("REALTIME_VOICE", "alloy")
+        temperature = runtime_config.get("TEMPERATURE", 0.7)
+        modalities = runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])
+        audio_format = runtime_config.get("REALTIME_AUDIO_FORMAT", "pcm16")
+        turn_detection_type = runtime_config.get("TURN_DETECTION_TYPE", "server_vad")
+        turn_detection_threshold = runtime_config.get("TURN_DETECTION_THRESHOLD", 0.5)
+        turn_detection_silence_ms = runtime_config.get("TURN_DETECTION_SILENCE_MS", 200)
+        tone_style = runtime_config.get("TONE_STYLE", "empathetic")
         
-        # Send session configuration (following the official docs)
+        # Build context for the assistant
+        context_parts = []
+        
+        if self.user_uuid:
+            # Get persistent memory (long-term user info)
+            persistent_summary = get_summary(self.user_uuid)
+            if persistent_summary:
+                context_parts.append(f"User Background:\n{persistent_summary}")
+            
+            # Get recent session memory
+            session_memory = get_all_session_memory(self.user_uuid)
+            if session_memory:
+                conversation_context = []
+                for interaction in session_memory[-8:]:  # Last 8 interactions for context
+                    role = interaction["role"].title()
+                    message = interaction["message"]
+                    conversation_context.append(f"{role}: {message}")
+                
+                if conversation_context:
+                    context_parts.append("Recent Conversation:\n" + "\n".join(conversation_context))
+        
+        # Build base system instructions with tone style
+        base_instructions = runtime_config.get("SYSTEM_PROMPT", "").format(tone_style=tone_style)
+
+        # Add user context if available
+        if context_parts:
+            full_instructions = base_instructions + f"\n\nContext about this user:\n\n{chr(10).join(context_parts)}"
+        else:
+            full_instructions = base_instructions
+        
+        print(f"🎛️ System instructions length: {len(full_instructions)} characters")
+        
+        # Build complete session configuration, including user speech transcription
         session_config = {
             "type": "session.update",
             "session": {
-                "modalities": ["text", "audio"],
-                "instructions": self.instructions or "You are a helpful AI assistant.",
-                "voice": "alloy",
-                "input_audio_format": "pcm16",
-                "output_audio_format": "pcm16",
-                "input_audio_transcription": {
-                    "model": "whisper-1"
-                },
+                "model": realtime_model,
+                "voice": realtime_voice,
+                "modalities": modalities,
+                "input_audio_format": audio_format,
+                "output_audio_format": audio_format,
+                "temperature": temperature,
+                "instructions": full_instructions,
+                # Enable user audio transcription via Whisper
+                "input_audio_transcription": {"model": "whisper-1"},
                 "turn_detection": {
-                    "type": "server_vad",
-                    "threshold": 0.5,           # TODO: Config Dashboard - Lower (0.3) = more sensitive
-                    "prefix_padding_ms": 300,   # TODO: Config Dashboard - Higher (500) = less cutoff at start  
-                    "silence_duration_ms": 200  # TODO: Config Dashboard - Higher (800-1000) = less interruption
+                    "type": turn_detection_type,
+                    "threshold": turn_detection_threshold,
+                    "silence_duration_ms": turn_detection_silence_ms,
+                    "prefix_padding_ms": 300
                 },
                 "tools": [
                     {
                         "type": "function",
                         "name": "search_knowledge_base",
-                        "description": "Search the Mobeus knowledge base for relevant information",
+                        "description": "Search the Mobeus knowledge base for specific information about Mobeus products, services, features, or company details",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "query": {
                                     "type": "string",
-                                    "description": "The search query"
+                                    "description": "Search query to find relevant Mobeus information"
                                 }
                             },
                             "required": ["query"]
                         }
                     },
                     {
-                        "type": "function",
+                        "type": "function", 
                         "name": "update_user_memory",
-                        "description": "Store important information about the user",
+                        "description": "Store important information about the user for future conversations",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "information": {
                                     "type": "string",
-                                    "description": "Important information to remember"
-                                },
-                                "user_uuid": {
-                                    "type": "string",
-                                    "description": "The user's UUID"
+                                    "description": "Important information to remember about the user (name, goals, preferences, etc.)"
                                 }
                             },
-                            "required": ["information", "user_uuid"]
+                            "required": ["information"]
                         }
                     }
                 ]
             }
         }
         
+        # Send configuration to OpenAI
         ws.send(json.dumps(session_config))
-        print("📤 Sent session configuration")
+        print(f"📤 Sent session config: model={realtime_model}, voice={realtime_voice}, temp={temperature}, tone={tone_style}")
         
     def on_message(self, ws, message):
         try:
             data = json.loads(message)
             msg_type = data.get('type', 'unknown')
-            print(f"📤 OpenAI → Client: {msg_type}")
             
-            # Handle function calls asynchronously
+            # FIXED: Improved conversation logging with correct event structures
+            if self.user_uuid:
+                if msg_type == "conversation.item.input_audio_transcription.completed":
+                    # User audio transcription completed - this is the reliable way to get user speech
+                    transcript = data.get("transcript", "").strip()
+                    if transcript:
+                        print(f"💬 Logging user audio: {transcript[:100]}...")
+                        log_interaction(self.user_uuid, "user", transcript)
+                
+                elif msg_type == "conversation.item.created":
+                    item = data.get("item", {})
+                    if item.get("type") == "message":
+                        role = item.get("role")
+                        if role == "user":
+                            # Extract user text content (for text input, not audio)
+                            content = ""
+                            if item.get("content"):
+                                for content_part in item["content"]:
+                                    if content_part.get("type") in ("input_text", "text"): 
+                                        content = content_part.get("text", "")
+                                        break
+                            
+                            if content:
+                                print(f"💬 Logging user text: {content[:100]}...")
+                                log_interaction(self.user_uuid, "user", content)
+                        
+                        elif role == "assistant":
+                            # Extract assistant content 
+                            content = ""
+                            if item.get("content"):
+                                for content_part in item["content"]:
+                                    if content_part.get("type") == "text":
+                                        content += content_part.get("text", "")
+                            
+                            if content:
+                                print(f"💬 Logging assistant message: {content[:100]}...")
+                                log_interaction(self.user_uuid, "assistant", content)
+                
+                elif msg_type == "response.audio_transcript.done":
+                    # Complete transcript of what AI said (more reliable than response.done)
+                    transcript = data.get("transcript", "").strip()
+                    if transcript:
+                        print(f"💬 Logging assistant audio transcript: {transcript[:100]}...")
+                        log_interaction(self.user_uuid, "assistant", transcript)
+            
+            # Handle function calls
             if msg_type == "response.function_call_arguments.done":
                 print(f"🔧 Function call: {data.get('name')}")
-                # Create a new event loop thread for async function call
-                import threading
                 def handle_async_function_call():
                     import asyncio
                     loop = asyncio.new_event_loop()
@@ -202,14 +290,6 @@ class OpenAIWebSocketClient:
                 thread.daemon = True
                 thread.start()
             
-            # Log important audio and conversation events
-            elif msg_type in ['input_audio_buffer.speech_started', 'input_audio_buffer.speech_stopped', 
-                            'conversation.item.created', 'response.audio.delta', 'response.audio.done',
-                            'session.created', 'session.updated']:
-                print(f"📤 OpenAI → Client: {msg_type} (important event)")
-                if 'transcript' in data:
-                    print(f"📝 Transcript: {data.get('transcript', '')}")
-            
             # Put message in queue for forwarding to client
             self.incoming_queue.put(message)
             
@@ -218,15 +298,9 @@ class OpenAIWebSocketClient:
             traceback.print_exc()
     
     def on_error(self, ws, error):
-        logger = logging.getLogger("realtime_chat")
-        logger.setLevel(logging.INFO)
-        logger.error("❌ WebSocket error", exc_info=error)
         print(f"❌ OpenAI WebSocket error: {error}")
         
     def on_close(self, ws, close_status_code, close_msg):
-        logger = logging.getLogger("realtime_chat")
-        logger.setLevel(logging.INFO)
-        logging.getLogger("realtime_chat").info(f"🔒 OpenAI WebSocket closed (code={close_status_code}, reason={close_msg})")
         print(f"🔌 OpenAI WebSocket closed: {close_status_code} - {close_msg}")
         self.connected = False
     
@@ -285,52 +359,104 @@ class OpenAIWebSocketClient:
 
 @router.websocket("/api/realtime/chat")
 async def realtime_chat(websocket: WebSocket):
-    # 1) Accept connection and prove we’re here
     await websocket.accept()
     print("🖐️  ACCEPTED websocket")
-    logger = logging.getLogger("realtime_chat")
-    logger.setLevel(logging.INFO)
-
+    
     user_uuid = websocket.query_params.get("user_uuid", "")
-    logger.info(f"➡️ Client connected: {user_uuid!r}")
     print(f"🎯 WebSocket client connected - UUID: {user_uuid!r}")
 
-    # 2) Wrap *all* your logic in try/except
     openai_client = None
     try:
-        # … your existing instruction‐enrichment code …
         if not OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY must be set")
+            
+        # Create client with user UUID for memory integration
         openai_client = OpenAIWebSocketClient(
             api_key=OPENAI_API_KEY,
+            user_uuid=user_uuid
         )
+        
         if not openai_client.connect():
             raise RuntimeError("Failed to connect to OpenAI")
 
-        # Tell the browser we’re ready
+        # Tell the browser we're ready
         await websocket.send_json({"type": "session.created", "session": {"status": "ready"}})
-        print("✅ Session ready, client notified")
+        print("✅ Session ready, Mobeus is online!")
 
-        # Spawn the two loops
+        # FIXED: Simplified forwarding to prevent double RAG injection
         async def forward_from_openai():
+            """Simply relay events from OpenAI to client without RAG injection"""
             while openai_client.connected:
                 msg = openai_client.get_message()
                 if msg:
-                    print(f"⬅️ OpenAI → backend event")
                     await websocket.send_text(msg)
-                    print(f"📤 Forwarded event to browser")
                 await asyncio.sleep(0.01)
 
         async def forward_from_client():
+            """Handle incoming client messages and inject RAG context ONCE ONLY"""
             while True:
                 data = await websocket.receive_text()
-                print(f"📥 Received from browser ({len(data)} bytes)")
-                # … parse, log, and send to OpenAI …
+                
+                # FIXED: Only inject RAG context on specific client-sent messages
+                try:
+                    msg = json.loads(data)
+                    if msg.get("type") == "conversation.item.create":
+                        item = msg.get("item", {})
+                        if item.get("type") == "message" and item.get("role") == "user":
+                            # Extract user text content
+                            user_text = ""
+                            for part in item.get("content", []):
+                                if part.get("type") in ("text", "input_text"):
+                                    user_text = part.get("text", "")
+                                    break
+                            
+                            if user_text:
+                                print(f"🖐️ User text message: {user_text[:100]}")
+                                
+                                # Generate unique ID to prevent duplicate RAG injection
+                                import hashlib
+                                message_id = hashlib.md5(f"{user_text}{len(user_text)}".encode()).hexdigest()
+                                
+                                if message_id != openai_client.last_rag_injection_id:
+                                    openai_client.last_rag_injection_id = message_id
+                                    
+                                    try:
+                                        docs = await retrieve_documents(user_text)
+                                        print(f"🔍 Retrieved {len(docs)} docs for user query")
+                                        
+                                        if docs:
+                                            docs_text = "\n\n---\n\n".join([d.get("text", "") for d in docs[:3]])
+                                            # Inject as system message with correct content type
+                                            sys_event = {
+                                                "type": "conversation.item.create",
+                                                "item": {
+                                                    "type": "message",
+                                                    "role": "system",
+                                                    "content": [{"type": "input_text", "text": f"Relevant Information from Mobeus knowledge base:\n{docs_text}"}]
+                                                }
+                                            }
+                                            sys_msg = json.dumps(sys_event)
+                                            print(f"📤 Injecting RAG info: {sys_msg[:200]}...")
+                                            openai_client.send_message(sys_msg)
+                                    except Exception as e:
+                                        print(f"❌ Error retrieving documents: {e}")
+                                else:
+                                    print("⚠️ Skipping duplicate RAG injection")
+                    
+                    # Also handle audio transcription completion for RAG
+                    elif msg.get("type") == "input_audio_buffer.commit":
+                        # This indicates user finished speaking - transcript will come later
+                        print("🎤 User finished speaking, awaiting transcript...")
+                
+                except Exception as e:
+                    print(f"❌ Error processing client message: {e}")
+                
+                # Forward original client message to OpenAI
                 if not openai_client.send_message(data):
                     print("❌ Failed to send to OpenAI")
                     return
 
-        # Run them together
+        # Run both forwarding loops
         await asyncio.gather(
             forward_from_openai(),
             forward_from_client(),
@@ -339,7 +465,6 @@ async def realtime_chat(websocket: WebSocket):
     except WebSocketDisconnect:
         print("🔌 Client disconnected")
     except Exception as e:
-        # Catch anything else
         print("❌ Exception in realtime_chat handler:", e)
         traceback.print_exc()
         try:
@@ -348,7 +473,6 @@ async def realtime_chat(websocket: WebSocket):
             pass
 
     finally:
-        # Always clean up
         if openai_client:
             openai_client.close()
         print("🧹 Connection cleanup completed")

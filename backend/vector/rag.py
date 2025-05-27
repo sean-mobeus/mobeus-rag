@@ -9,7 +9,8 @@ from typing import cast
 from chromadb.api.types import EmbeddingFunction, Embeddable
 from config import OPENAI_API_KEY, CHROMA_DB_DIR, EMBED_MODEL, DEBUG_LOG_PATH
 from chat.agents.tone_engine import get_tone_shaping_chunks
-from memory.session_memory import get_recent_interactions
+import runtime_config
+from memory.session_memory import get_all_session_memory, get_memory_stats
 from memory.persistent_memory import get_summary
 
 # Print debug information about the environment
@@ -19,8 +20,11 @@ print(f"🔍 RAG Module Debug: Log directory exists: {os.path.exists(os.path.dir
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
 chroma_client = PersistentClient(path=CHROMA_DB_DIR)
+# Debug: verify ChromaDB directory path and existence
+print(f"🔍 ChromaDB directory: {CHROMA_DB_DIR}, exists: {os.path.exists(CHROMA_DB_DIR)}")
 # Create and cast embedding function to satisfy type checker requirements
-_embedding_fn = OpenAIEmbeddingFunction(api_key=OPENAI_API_KEY, model_name=EMBED_MODEL)
+embed_model = runtime_config.get("EMBED_MODEL", "text-embedding-3-small")
+_embedding_fn = OpenAIEmbeddingFunction(api_key=OPENAI_API_KEY, model_name=embed_model)
 _embedding_fn_cast: EmbeddingFunction[Embeddable] = cast(EmbeddingFunction[Embeddable], _embedding_fn)
 collection = chroma_client.get_or_create_collection(
     name="mobeus_knowledge",
@@ -77,81 +81,104 @@ def log_debug(query, chunks, answer, timings):
 
 from typing import Optional
 
-def query_rag(query: str, uuid: Optional[str] = None):
-    start_time = time.time()
-
-    retrieval_start = time.time()
-    results = collection.query(query_texts=[query], n_results=5)
-    retrieval_end = time.time()
-
-    documents = results.get("documents")
-    metadatas = results.get("metadatas")
-    if documents and len(documents) > 0 and documents[0] is not None:
-        retrieved_chunks = documents[0]
-    else:
-        retrieved_chunks = []
-    if metadatas and len(metadatas) > 0 and metadatas[0] is not None:
-        sources = metadatas[0]
-    else:
-        sources = []
-    context = "\n\n".join(retrieved_chunks)
-
-    tone_start = time.time()
-    tone_chunks = get_tone_shaping_chunks(query, top_k=3)
-    tone_end = time.time()
-    tone_prefix = "\n".join([f"TONE GUIDELINE: {chunk}" for chunk in tone_chunks])
-
-    memory_prefix = ""
-    if uuid:
-        summary = get_summary(uuid)
-        history = get_recent_interactions(uuid, limit=5)
-        memory_lines = [f"{item['role'].capitalize()}: {item['message']}" for item in history]
-
-        memory_blocks = []
-        if summary:
-            memory_blocks.append(f"Long-term summary:\n{summary}")
-        if memory_lines:
-            memory_blocks.append("Recent conversation:\n" + "\n".join(memory_lines))
-
-        memory_prefix = "\n\n".join(memory_blocks) + "\n"
-
-    prompt = f"""{tone_prefix}
-
-{memory_prefix}
-Use the following information to answer the question.
-If the answer is not fully contained, try to summarize what's known or likely.
-
-Context:
-{context}
-
-Question:
-{query}
-
-Answer:"""
-
-    gpt_start = time.time()
-    chat_response = openai_client.chat.completions.create(
-        model="gpt-4",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2
+def query_rag(query: str, uuid: str) -> dict:
+    """
+    Enhanced RAG query that uses runtime config and new memory system
+    """
+    # Get config values (will update in real-time!)
+    rag_result_count = runtime_config.get("RAG_RESULT_COUNT", 5)
+    rag_temperature = runtime_config.get("RAG_TEMPERATURE", 0.3)
+    gpt_model = runtime_config.get("GPT_MODEL", "gpt-4")
+    tone_style = runtime_config.get("TONE_STYLE", "empathetic")
+    
+    print(f"🎛️ Using RAG config: {rag_result_count} results, temp={rag_temperature}, model={gpt_model}")
+    
+    # Get vector results using config
+    results = collection.query(
+        query_texts=[query], 
+        n_results=rag_result_count  # Now configurable!
     )
-    gpt_end = time.time()
+    
+    # Build context using new memory system
+    context_parts = []
+    
+    # 1. Add persistent memory summary
+    persistent_summary = get_summary(uuid)
+    if persistent_summary:
+        context_parts.append(f"User Background: {persistent_summary}")
+    
+    # 2. Add ALL session memory (character-based, not count-based)
+    session_memory = get_all_session_memory(uuid)
+    if session_memory:
+        conversation_context = []
+        for interaction in session_memory:
+            role = interaction["role"].title()
+            message = interaction["message"]
+            conversation_context.append(f"{role}: {message}")
+        
+        context_parts.append("Recent Conversation:\n" + "\n".join(conversation_context))
+    
+    # 3. Add RAG results
+    if results and results['documents'] and results['documents'][0]:
+        rag_context = "\n".join(results['documents'][0])
+        context_parts.append(f"Relevant Information:\n{rag_context}")
+    
+    # Build final prompt with tone
+    full_context = "\n\n".join(context_parts)
+    
+    # Create system message based on tone config
+    tone_prompts = {
+        "empathetic": "You are a caring, empathetic assistant who understands user emotions and responds with warmth.",
+        "casual": "You are a friendly, casual assistant who speaks naturally and conversationally.",
+        "professional": "You are a professional, precise assistant who provides clear and authoritative responses.",
+        "friendly": "You are an upbeat, friendly assistant who is enthusiastic about helping.",
+        "concise": "You are a direct, concise assistant who provides efficient and to-the-point responses."
+    }
+    
+    system_message = tone_prompts.get(tone_style, tone_prompts["empathetic"])
+    
+    # Call OpenAI with config values
+    response = openai_client.chat.completions.create(
+        model=gpt_model,  # Configurable model
+        messages=[
+            {"role": "system", "content": system_message},
+            {"role": "user", "content": f"Context:\n{full_context}\n\nQuery: {query}"}
+        ],
+        temperature=rag_temperature  # Configurable temperature
+    )
+    
+    answer = response.choices[0].message.content
+    
+    # Get memory stats for debugging
+    memory_stats = get_memory_stats(uuid)
 
-    answer = chat_response.choices[0].message.content
-    total_time = time.time() - start_time
-
-    log_debug(query, sources, answer, {
-        "total": total_time,
-        "retrieval": retrieval_end - retrieval_start,
-        "tone": tone_end - tone_start,
-        "gpt": gpt_end - gpt_start
-    })
-
+    def safe_get_sources(results):
+        """Safely extract sources from ChromaDB results"""
+        if not results:
+            return []
+    
+        metadatas = results.get('metadatas')
+        if not metadatas or not isinstance(metadatas, list) or len(metadatas) == 0:
+            return []
+    
+        first_metadata_list = metadatas[0]
+        if not first_metadata_list or not isinstance(first_metadata_list, list):
+            return []
+    
+        return first_metadata_list
+    
     return {
         "answer": answer,
-        "sources": sources
+        "sources": safe_get_sources(results),
+        "config_used": {
+            "model": gpt_model,
+            "temperature": rag_temperature,
+            "results_count": rag_result_count,
+            "tone": tone_style
+        },
+        "memory_stats": memory_stats
     }
- 
+
 async def retrieve_documents(query: str):
     results = collection.query(query_texts=[query], n_results=5)
     documents = results.get("documents")

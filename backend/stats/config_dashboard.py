@@ -1,30 +1,21 @@
-# config_dashboard.py
+# stats/config_dashboard.py
 from fastapi import APIRouter, Request, Form
 from fastapi.responses import HTMLResponse, RedirectResponse
-from fastapi.templating import Jinja2Templates
-from typing import List, Optional
+from typing import Optional
 import os
 import json
 from pathlib import Path
-
-# Import configuration modules
-from runtime_config import get as get_config, set as set_config, all_config, to_env_file
+import runtime_config
+# Import default summary prompt for session memory
+from memory.session_memory import get_summary_prompt
 from openaiconfig.openai_realtime_constants import (
     REALTIME_VOICES, 
     REALTIME_MODELS, 
     REALTIME_AUDIO_FORMATS,
-    REALTIME_MODALITIES,
     DEFAULT_REALTIME_CONFIG
 )
 
 router = APIRouter()
-
-# Create templates directory if it doesn't exist
-templates_dir = Path("templates")
-templates_dir.mkdir(exist_ok=True)
-
-# Initialize templates
-templates = Jinja2Templates(directory="templates")
 
 # Configuration sections and their parameters
 CONFIG_SECTIONS = {
@@ -32,22 +23,27 @@ CONFIG_SECTIONS = {
         "SESSION_MEMORY_CHAR_LIMIT": {
             "label": "Session Memory Limit (chars)",
             "type": "number",
-            "help": "Maximum number of characters to store in short-term session memory",
-            "min": 1000,
-            "max": 100000
+            "help": "Character limit for session memory before auto-summarization",
+            "min": 5000,
+            "max": 20000
         },
-        "PROMPT_HISTORY_DEPTH": {
-            "label": "Conversation History Depth",
-            "type": "number",
-            "help": "Number of previous messages to include in each prompt",
-            "min": 1,
-            "max": 20
+        "SESSION_SUMMARY_PROMPT": {
+            "label": "Conversation Summary Prompt", 
+            "type": "textarea",
+            "help": "Prompt used to summarize conversations for persistent memory"
         },
         "TONE_STYLE": {
             "label": "Assistant Tone Style",
             "type": "select",
             "options": ["empathetic", "casual", "professional", "friendly", "concise"],
             "help": "Personality style for assistant responses"
+        }
+    },
+    "System Instructions": {
+        "SYSTEM_PROMPT": {
+            "label": "System Prompt",
+            "type": "textarea",
+            "help": "Main system instructions that define the assistant's behavior and capabilities. Use {tone_style} placeholder for dynamic tone insertion."
         }
     },
     "Model Settings": {
@@ -146,23 +142,30 @@ async def config_dashboard(request: Request):
     Render the enhanced configuration dashboard with all parameters
     organized into sections.
     """
-    # Get current configuration
-    current_config = all_config()
+    # Get current configuration values
+    current_config = runtime_config.all_config()
+
+    # DEBUG CODE TEMPORARILY:
+    print("🔍 DEBUG: Current config values:")
+    for key, value in current_config.items():
+        print(f"  {key}: {repr(value)}")
+    print("🔍 DEBUG: Default config values:")
+    for key, value in runtime_config.DEFAULT_CONFIG.items():
+        print(f"  {key}: {repr(value)}")
+    # END DEBUG CODE
+
+    # Ensure the conversation summary prompt shows the default or saved value
+    current_config["SESSION_SUMMARY_PROMPT"] = current_config.get("SESSION_SUMMARY_PROMPT") or get_summary_prompt()
+    current_config["SYSTEM_PROMPT"] = current_config.get("SYSTEM_PROMPT") or runtime_config.DEFAULT_CONFIG["SYSTEM_PROMPT"]
+
     
-    # Add realtime config from a separate file if it exists
-    realtime_config_path = os.getenv("REALTIME_CONFIG_PATH", "config/realtime_config.json")
-    realtime_config = {}
-    try:
-        if os.path.exists(realtime_config_path):
-            with open(realtime_config_path, "r") as f:
-                realtime_config = json.load(f)
-        else:
-            realtime_config = DEFAULT_REALTIME_CONFIG
-    except Exception as e:
-        realtime_config = DEFAULT_REALTIME_CONFIG
-    
-    # Merge configs
-    merged_config = {**current_config, **realtime_config}
+    # Show success/reset messages if present
+    query_params = dict(request.query_params)
+    success_message = ""
+    if query_params.get("saved") == "true":
+        success_message = '<div class="success-message">✅ Configuration saved successfully!</div>'
+    elif query_params.get("reset") == "true":
+        success_message = '<div class="success-message">✅ Configuration reset to defaults!</div>'
     
     # Create HTML for the configuration sections
     sections_html = []
@@ -175,7 +178,7 @@ async def config_dashboard(request: Request):
         """
         
         for key, param in params.items():
-            value = merged_config.get(key, "")
+            value = current_config.get(key, "")
             label = param.get("label", key)
             param_type = param.get("type", "text")
             help_text = param.get("help", "")
@@ -223,6 +226,11 @@ async def config_dashboard(request: Request):
                 min_attr = f'min="{min_val}"' if min_val != "" else ""
                 max_attr = f'max="{max_val}"' if max_val != "" else ""
                 input_html = f'<input type="number" name="{key}" value="{value}" {min_attr} {max_attr} class="form-control">'
+            
+            elif param_type == "textarea":
+                # For textarea, we need to handle multi-line content properly
+                current_value = str(value).replace('"', '&quot;').replace("'", "&#39;")
+                input_html = f'<textarea name="{key}" rows="6" class="form-control" placeholder="{help_text}">{current_value}</textarea>'
             
             else:  # Default to text input
                 input_html = f'<input type="text" name="{key}" value="{value}" class="form-control">'
@@ -293,6 +301,23 @@ async def config_dashboard(request: Request):
                 margin: 0 auto;
             }}
             
+            .breadcrumb {{
+                display: flex;
+                align-items: center;
+                gap: 0.5rem;
+                font-size: 0.875rem;
+                margin-bottom: 1rem;
+            }}
+            
+            .breadcrumb a {{
+                color: var(--primary-color);
+                text-decoration: none;
+            }}
+            
+            .breadcrumb span {{
+                color: #6b7280;
+            }}
+            
             .config-form {{
                 display: grid;
                 grid-template-columns: repeat(auto-fill, minmax(500px, 1fr));
@@ -331,6 +356,19 @@ async def config_dashboard(request: Request):
                 border-radius: 0.25rem;
                 font-size: 1rem;
                 width: 100%;
+                font-family: inherit;
+            }}
+            
+            textarea.form-control {{
+                resize: vertical;
+                min-height: 100px;
+                font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+                font-size: 0.875rem;
+            }}
+
+            textarea[name="SYSTEM_PROMPT"] {{
+                min-height: 200px;
+                font-size: 0.875rem;
             }}
             
             .form-range {{
@@ -372,39 +410,9 @@ async def config_dashboard(request: Request):
                 color: #6b7280;
                 font-size: 0.75rem;
                 cursor: help;
+                position: relative;
             }}
             
-            .button-group {{
-                display: flex;
-                justify-content: flex-end;
-                gap: 1rem;
-                margin-top: 1rem;
-            }}
-            
-            .btn {{
-                padding: 0.5rem 1rem;
-                border-radius: 0.25rem;
-                font-weight: 500;
-                cursor: pointer;
-                border: none;
-                font-size: 1rem;
-            }}
-            
-            .btn-primary {{
-                background-color: var(--primary-color);
-                color: white;
-            }}
-            
-            .btn-secondary {{
-                background-color: #e5e7eb;
-                color: #1f2937;
-            }}
-            
-            .btn:hover {{
-                opacity: 0.9;
-            }}
-            
-            /* Tooltip styles */
             .help-tooltip:hover::after {{
                 content: attr(title);
                 position: absolute;
@@ -423,6 +431,47 @@ async def config_dashboard(request: Request):
                 white-space: normal;
             }}
             
+            .button-group {{
+                display: flex;
+                justify-content: flex-end;
+                gap: 1rem;
+                margin-top: 1rem;
+            }}
+            
+            .btn {{
+                padding: 0.75rem 1.5rem;
+                border-radius: 0.375rem;
+                font-weight: 500;
+                cursor: pointer;
+                border: none;
+                font-size: 1rem;
+                transition: all 0.2s;
+            }}
+            
+            .btn-primary {{
+                background-color: var(--primary-color);
+                color: white;
+            }}
+            
+            .btn-secondary {{
+                background-color: #e5e7eb;
+                color: #1f2937;
+            }}
+            
+            .btn:hover {{
+                opacity: 0.9;
+                transform: translateY(-1px);
+            }}
+            
+            .success-message {{
+                background-color: #d1fae5;
+                border: 1px solid #10b981;
+                color: #065f46;
+                padding: 1rem;
+                border-radius: 0.375rem;
+                margin-bottom: 1rem;
+            }}
+            
             @media (max-width: 768px) {{
                 .config-form {{
                     grid-template-columns: 1fr;
@@ -436,16 +485,24 @@ async def config_dashboard(request: Request):
     </head>
     <body>
         <div class="dashboard-container">
-            <h1>Mobeus Assistant — Configuration Dashboard</h1>
+            <div class="breadcrumb">
+                <a href="/admin/">Dashboard</a>
+                <span>/</span>
+                <span>Configuration</span>
+            </div>
             
-            <form method="POST" action="/config">
+            <h1>🎛️ Mobeus Assistant — Configuration Dashboard</h1>
+            
+            {success_message}
+            
+            <form method="POST" action="/admin/config">
                 <div class="config-form">
                     {"".join(sections_html)}
                 </div>
                 
                 <div class="button-group">
                     <button type="button" class="btn btn-secondary" onclick="resetDefaults()">Reset to Defaults</button>
-                    <button type="submit" class="btn btn-primary">Save Configuration</button>
+                    <button type="submit" class="btn btn-primary">💾 Save Configuration</button>
                 </div>
             </form>
         </div>
@@ -462,9 +519,16 @@ async def config_dashboard(request: Request):
             // Reset to defaults function
             function resetDefaults() {{
                 if (confirm('Are you sure you want to reset all settings to their default values?')) {{
-                    window.location.href = '/config/reset';
+                    window.location.href = '/admin/config/reset';
                 }}
             }}
+            
+            // Form submission feedback
+            document.querySelector('form').addEventListener('submit', function() {{
+                const submitBtn = document.querySelector('.btn-primary');
+                submitBtn.textContent = '💾 Saving...';
+                submitBtn.disabled = true;
+            }});
         </script>
     </body>
     </html>
@@ -479,7 +543,7 @@ async def update_config(request: Request):
     """
     form_data = await request.form()
     
-    # Process standard config parameters
+    # Process configuration parameters
     updated_config = {}
     for section_params in CONFIG_SECTIONS.values():
         for key in section_params:
@@ -504,60 +568,40 @@ async def update_config(request: Request):
                     else:
                         updated_config[key] = values[0]
     
-    # Separate runtime config from realtime API config
-    runtime_keys = set()
-    for key in ["SESSION_MEMORY_CHAR_LIMIT", "GPT_MODEL", "PROMPT_HISTORY_DEPTH", "TONE_STYLE", "TEMPERATURE"]:
-        if key in updated_config:
-            # Update runtime config
-            set_config(key, updated_config[key])
-            runtime_keys.add(key)
+    # Update runtime config
+    for key, value in updated_config.items():
+        runtime_config.set_config(key, value)
     
-    # Save runtime config to .env file
-    to_env_file(".env")
+    # Save to .env file
+    try:
+        runtime_config.to_env_file(".env")
+        print(f"✅ Configuration updated: {list(updated_config.keys())}")
+    except Exception as e:
+        print(f"❌ Error saving configuration: {e}")
     
-    # Save realtime API config to a separate JSON file
-    realtime_config = {k: v for k, v in updated_config.items() if k not in runtime_keys}
-    
-    if realtime_config:
-        realtime_config_path = os.getenv("REALTIME_CONFIG_PATH", "config/realtime_config.json")
-        os.makedirs(os.path.dirname(realtime_config_path), exist_ok=True)
-        
-        try:
-            with open(realtime_config_path, "w") as f:
-                json.dump(realtime_config, f, indent=2)
-        except Exception as e:
-            print(f"Error saving realtime config: {e}")
-    
-    return RedirectResponse(url="/config", status_code=303)
+    # Redirect back to config page with success message
+    return RedirectResponse(url="/admin/config?saved=true", status_code=303)
 
 @router.get("/config/reset")
 async def reset_config():
     """
     Reset all configuration values to their defaults.
     """
-    # Reset runtime config to defaults
-    for key in ["SESSION_MEMORY_CHAR_LIMIT", "GPT_MODEL", "PROMPT_HISTORY_DEPTH", "TONE_STYLE"]:
-        default_value = {
-            "SESSION_MEMORY_CHAR_LIMIT": 15000,
-            "GPT_MODEL": "gpt-4",
-            "PROMPT_HISTORY_DEPTH": 5,
-            "TONE_STYLE": "empathetic"
-        }.get(key)
-        
-        if default_value is not None:
-            set_config(key, default_value)
-    
-    # Save runtime config to .env file
-    to_env_file(".env")
-    
-    # Reset realtime config to defaults
-    realtime_config_path = os.getenv("REALTIME_CONFIG_PATH", "config/realtime_config.json")
-    os.makedirs(os.path.dirname(realtime_config_path), exist_ok=True)
-    
     try:
-        with open(realtime_config_path, "w") as f:
-            json.dump(DEFAULT_REALTIME_CONFIG, f, indent=2)
+        runtime_config.reset_to_defaults()
+        runtime_config.to_env_file(".env")
+        print("✅ Configuration reset to defaults")
     except Exception as e:
-        print(f"Error saving default realtime config: {e}")
+        print(f"❌ Error resetting configuration: {e}")
     
-    return RedirectResponse(url="/config", status_code=303)
+    return RedirectResponse(url="/admin/config?reset=true", status_code=303)
+
+@router.get("/config/api")
+async def get_config_api():
+    """
+    API endpoint to get current configuration as JSON
+    """
+    return {
+        "config": runtime_config.all_config(),
+        "sections": list(CONFIG_SECTIONS.keys())
+    }

@@ -9,8 +9,8 @@ IN_DOCKER = os.getenv("MOBEUS_DEBUG") == "true"
 # OpenAI API Key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# ChromaDB directory - path is relative to current working directory
-CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "../chroma")
+# ChromaDB directory - path relative to application root (mounted at /app/chroma)
+CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "chroma")
 
 # OpenAI Embedding Model - use the current model from your config
 EMBED_MODEL = os.getenv("EMBED_MODEL", "text-embedding-3-small")
