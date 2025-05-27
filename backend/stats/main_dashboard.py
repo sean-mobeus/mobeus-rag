@@ -705,7 +705,7 @@ def render_dashboard_html(system_info):
                 </div>
                 <div class="dashboard-card-title">Sessions</div>
                 <div class="dashboard-card-description">
-                    View and manage user sessions, conversation history, and user activity.
+                    View and manage user sessions, conversation history, and deep system analysis with cost tracking.
                 </div>
                 <div class="dashboard-card-cta">
                     Manage Sessions

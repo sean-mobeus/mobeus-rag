@@ -10,6 +10,7 @@ import queue
 from typing import Optional
 import sys
 import runtime_config
+import datetime
 
 from config import OPENAI_API_KEY
 from vector.rag import log_debug, retrieve_documents
@@ -476,3 +477,28 @@ async def realtime_chat(websocket: WebSocket):
         if openai_client:
             openai_client.close()
         print("🧹 Connection cleanup completed")
+
+def calculate_cost(input_tokens: int, output_tokens: int, model: str) -> float:
+    """Estimate the cost of a request based on token usage and model."""
+    # Updated pricing (per 1K tokens) - closer to actual OpenAI rates
+    pricing = {
+        "gpt-4o-realtime-preview-2024-12-17": {"input": 0.005, "output": 0.020},  # Realtime pricing
+        "gpt-4o": {"input": 0.005, "output": 0.015},
+        "gpt-4": {"input": 0.030, "output": 0.060},
+        "default": {"input": 0.005, "output": 0.015}
+    }
+    price = pricing.get(model, pricing["default"])
+    return (input_tokens / 1000) * price["input"] + (output_tokens / 1000) * price["output"]
+
+def log_token_usage(user_uuid: str, input_tokens: int, output_tokens: int, model: str):
+    """Log token usage for cost tracking"""
+    with open("token_usage.jsonl", "a") as f:
+        entry = {
+            "timestamp": datetime.datetime.now().isoformat(),
+            "user_uuid": user_uuid,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "model": model,
+            "estimated_cost": calculate_cost(input_tokens, output_tokens, model)
+        }
+        f.write(json.dumps(entry) + "\n")
