@@ -16,6 +16,8 @@ export default function OpenAIRealtimeAssistant() {
   const [error, setError] = useState(null);
   const [messages, setMessages] = useState([]);
   const [currentResponse, setCurrentResponse] = useState("");
+  const [toolStrategy, setToolStrategy] = useState("auto");
+  const [strategySource, setStrategySource] = useState("default");
 
   // User state
   const [userName, setUserName] = useState(
@@ -66,6 +68,8 @@ export default function OpenAIRealtimeAssistant() {
     client.on("speech.stopped", handleSpeechStopped);
     client.on("response.audio.delta", handleAudioDelta);
     client.on("response.audio.done", handleAudioDone);
+    client.on("strategy_updated", handleStrategyUpdated);
+    client.on("strategy_update_broadcast", handleStrategyUpdateBroadcast);
 
     // Cleanup on unmount
     return () => {
@@ -81,6 +85,27 @@ export default function OpenAIRealtimeAssistant() {
   const handleConnected = () => {
     console.log("Connected to backend");
     setConnecting(true); // Will be set to false by session.created
+  };
+
+  const handleStrategyUpdated = (event) => {
+    console.log("🎛️ Strategy updated:", event);
+    setToolStrategy(event.strategy);
+    setStrategySource(event.source || "direct");
+
+    // Show user feedback about strategy change
+    if (event.source === "dashboard_broadcast") {
+      // This came from the dashboard - show special notification
+      showStrategyChangeNotification(event.strategy, true);
+    } else {
+      // This was a direct update
+      showStrategyChangeNotification(event.strategy, false);
+    }
+  };
+
+  const handleStrategyUpdateBroadcast = (event) => {
+    console.log("📡 Strategy broadcast received:", event);
+    // This is handled the same as regular strategy updates
+    handleStrategyUpdated(event);
   };
 
   async function handleSessionCreated(session) {
@@ -215,6 +240,15 @@ export default function OpenAIRealtimeAssistant() {
     }
   };
 
+  const showStrategyChangeNotification = (newStrategy, fromDashboard) => {
+    // You can implement a toast notification here
+    console.log(
+      `🎛️ Strategy changed to: ${newStrategy} ${
+        fromDashboard ? "(from dashboard)" : ""
+      }`
+    );
+  };
+
   // Audio visualization loop
   useEffect(() => {
     if (!speaking) {
@@ -263,7 +297,7 @@ export default function OpenAIRealtimeAssistant() {
     setError(null);
 
     try {
-      await clientRef.current.connect(userUuid);
+      await clientRef.current.connect(userUuid, null, toolStrategy);
     } catch (error) {
       setError(error.toString());
       setConnecting(false);
@@ -314,6 +348,26 @@ export default function OpenAIRealtimeAssistant() {
     if (speaking) return "text-blue-600";
     if (connected) return "text-emerald-600";
     return "text-gray-500";
+  };
+
+  const StrategyDisplay = () => {
+    if (!connected) return null;
+  };
+
+  const strategyLabels = {
+    auto: "Auto",
+    conservative: "Minimal",
+    aggressive: "Comprehensive",
+    none: "Direct Only",
+    required: "Always Search",
+  };
+
+  const strategyColors = {
+    auto: "text-blue-400",
+    conservative: "text-green-400",
+    aggressive: "text-purple-400",
+    none: "text-gray-400",
+    required: "text-red-400",
   };
 
   return (

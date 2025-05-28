@@ -26,6 +26,7 @@ from stats.debug_dashboard import router as debug_dashboard_router
 from stats.config_dashboard import router as config_dashboard_router
 from stats.main_dashboard import router as main_dashboard_router
 from stats.session_dashboard import router as session_dashboard_router
+from stats.tools_dashboard import router as tools_dashboard_router
 
 
 logging.basicConfig(level=logging.INFO)
@@ -69,6 +70,7 @@ app.include_router(main_dashboard_router, prefix="/admin")      # /admin/ (main 
 app.include_router(debug_dashboard_router, prefix="/admin")     # /admin/debug
 app.include_router(config_dashboard_router, prefix="/admin")    # /admin/config
 app.include_router(session_dashboard_router, prefix="/admin")   # /admin/session
+app.include_router(tools_dashboard_router, prefix="/admin")      # /admin/tools
 
 
 # Initialize OpenAI client

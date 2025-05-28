@@ -5,13 +5,16 @@ import datetime
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Request, Query, Path
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
-from memory.session_memory import get_recent_interactions, get_memory_stats
-from memory.persistent_memory import get_summary
+from memory.session_memory import get_all_session_memory, get_memory_stats
+from memory.persistent_memory import append_to_summary, get_summary
 from memory.db import get_connection, execute_db_operation
 from pydantic import BaseModel
 import runtime_config
+from config import LOG_DIR
+
 
 router = APIRouter()
+
 
 # Token pricing (you can make these configurable later)
 TOKEN_PRICING = {
@@ -20,6 +23,24 @@ TOKEN_PRICING = {
     "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
     "gpt-4o-realtime-preview-2024-12-17": {"input": 0.005, "output": 0.02}  # Realtime pricing
 }
+
+def get_recent_summarization_events(uuid: str) -> list:
+    """Get recent summarization events for dashboard"""
+    events = []
+    try:
+        summarization_log = os.path.join(LOG_DIR, os.getenv("MOBEUS_SUMMARIZATION_LOG", "summarization_events.jsonl"))
+        if os.path.exists(summarization_log):
+            with open(summarization_log, "r") as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                        if event.get("user_uuid") == uuid:
+                            events.append(event)
+                    except:
+                        continue
+    except:
+        pass
+    return events[-5:]  # Last 5 events
 
 def get_active_sessions(limit: int = 100):
     """
@@ -87,10 +108,11 @@ async def update_session_summary(uuid: str, data: SummaryUpdate):
     """
     Update the session summary.
     """
-    from memory.persistent_memory import set_summary
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+    summary_with_timestamp = f"[{timestamp}] Manual Update: {data.summary}"
     
     try:
-        set_summary(uuid, data.summary)
+        append_to_summary(uuid, summary_with_timestamp)
         return {"success": True}
     except Exception as e:
         return {"success": False, "error": str(e)}
@@ -139,7 +161,7 @@ def get_session_deep_dive(uuid: str):
     """Get comprehensive session analysis with memory system details"""
     try:
         # Get basic session data
-        conversation = get_recent_interactions(uuid, limit=100)  # Get more for analysis
+        conversation = get_all_session_memory(uuid)  # Get more for analysis
         print(f"🔍 DEBUG: Conversation count = {len(conversation)}")
         summary = get_summary(uuid)
         print(f"🔍 DEBUG: Summary = {summary}")
@@ -160,9 +182,6 @@ def get_session_deep_dive(uuid: str):
         
         # Analyze memory transitions
         memory_transitions = analyze_memory_transitions(conversation, memory_stats)
-        
-        # Build sample prompt construction
-        prompt_construction = build_prompt_construction_example(uuid, current_config)
         
         # Calculate costs
         cost_analysis = calculate_session_cost({"conversation": conversation})
@@ -201,6 +220,11 @@ def get_session_deep_dive(uuid: str):
                     }
         
         stats = execute_db_operation(_get_enhanced_stats)
+        session_start = stats.get("first_message") if isinstance(stats, dict) else None
+        session_end = stats.get("last_message") if isinstance(stats, dict) else None
+        # Build sample prompt construction
+        prompt_construction = build_prompt_construction_example(uuid, current_config, session_start, session_end)
+        summarization_events = get_recent_summarization_events(uuid)
         
         return {
             "uuid": uuid,
@@ -211,7 +235,8 @@ def get_session_deep_dive(uuid: str):
             "memory_transitions": memory_transitions,
             "prompt_construction": prompt_construction,
             "cost_analysis": cost_analysis,
-            "session_config": current_config
+            "session_config": current_config,
+            "summarization_events": summarization_events
         }
         
     except Exception as e:
@@ -251,64 +276,85 @@ def analyze_memory_transitions(conversation: list, memory_stats: dict) -> list:
     
     return transitions
 
-def build_prompt_construction_example(uuid: str, config: dict) -> dict:
-    """Build an example of how prompts are constructed"""
+def build_prompt_construction_example(uuid: str, config: dict, session_start: Optional[str] = None, session_end: Optional[str] = None) -> dict:
+    """Get the ACTUAL prompt that was sent to OpenAI for this specific session"""
     
-    # Get components that would be used in final prompt
-    system_prompt = config.get("system_prompt", "")
-    if system_prompt and "{tone_style}" in system_prompt:
-        system_prompt = system_prompt.format(tone_style=config.get("tone_style", "empathetic"))
+    # Try to get prompt from the specific session timeframe
+    actual_prompt = get_latest_actual_prompt(uuid, session_start, session_end)
     
-    persistent_summary = get_summary(uuid)
-    recent_session = get_recent_interactions(uuid, limit=5)
-    
-    # Build context parts like in realtime_chat.py
-    context_parts = []
-    
-    if persistent_summary:
-        context_parts.append(f"User Background:\n{persistent_summary}")
-    
-    if recent_session:
-        conversation_context = []
-        for interaction in recent_session[-5:]:  # Last 5 interactions
-            if isinstance(interaction, dict):
-                role = interaction.get("role", "").title()
-                message = interaction.get("message", "")
-                conversation_context.append(f"{role}: {message}")
-        
-        if conversation_context:
-            context_parts.append("Recent Conversation:\n" + "\n".join(conversation_context))
-    
-    # Sample RAG context (simulate what would be injected)
-    sample_rag = "Relevant Information:\nMobeus is an AI assistant platform that provides comprehensive knowledge base search capabilities..."
-    context_parts.append(sample_rag)
-    
-    full_context = "\n\n".join(context_parts)
-    
-    # Build COMPLETE final prompt as it would actually be sent
-    final_prompt_parts = []
-    final_prompt_parts.append(f"SYSTEM INSTRUCTIONS:\n{system_prompt}")
-    
-    if full_context.strip():
-        final_prompt_parts.append(f"CONTEXT:\n{full_context}")
-    
-    final_prompt_parts.append("USER: [Latest user message would be inserted here]")
-    
-    final_prompt = "\n\n" + "="*50 + "\n\n".join(final_prompt_parts) + "\n\n" + "="*50
-    
-    return {
-        "system_prompt": system_prompt,
-        "system_prompt_length": len(system_prompt),
-        "persistent_summary": persistent_summary,
-        "persistent_summary_length": len(persistent_summary) if persistent_summary else 0,
-        "recent_session_length": sum(len(i.get("message", "")) for i in recent_session if isinstance(i, dict)),
-        "context_parts": context_parts,
-        "full_context": full_context,
-        "full_context_length": len(full_context),
-        "final_prompt": final_prompt,
-        "final_prompt_length": len(final_prompt),
-        "estimated_tokens": estimate_tokens(final_prompt)
-    }
+    if actual_prompt:
+        return {
+            "system_prompt": config.get("system_prompt", ""),
+            "system_prompt_length": len(config.get("system_prompt", "")),
+            "persistent_summary": get_summary(uuid),
+            "persistent_summary_length": len(get_summary(uuid) or ""),
+            "final_prompt": actual_prompt["final_prompt"],
+            "final_prompt_length": actual_prompt["prompt_length"],
+            "estimated_tokens": actual_prompt["estimated_tokens"],
+            "source": "ACTUAL PROMPT FROM THIS SESSION",
+            "timestamp": actual_prompt["timestamp"]
+        }
+    else:
+        return {"final_prompt": "No prompt logged for this session", "source": "NOT AVAILABLE"}
+
+def get_latest_actual_prompt(user_uuid: str, session_start: Optional[str] = None, session_end: Optional[str] = None) -> dict:
+    """Get the actual prompt for a specific session timeframe"""
+    try:
+        prompts_log = os.path.join(LOG_DIR, os.getenv("MOBEUS_ACTUAL_PROMPTS_LOG", "actual_prompts.jsonl"))
+        if os.path.exists(prompts_log):
+            with open(prompts_log, "r") as f:
+                lines = f.readlines()
+                
+            # Convert session times to datetime objects for comparison
+            session_start_dt = None
+            session_end_dt = None
+            if session_start:
+                try:
+                    session_start_dt = datetime.datetime.fromisoformat(session_start.replace('Z', '+00:00'))
+                    # Make the window more generous - prompts often logged before first message
+                    session_start_dt = session_start_dt - datetime.timedelta(minutes=5)  # 5 min buffer
+                except:
+                    session_start_dt = None
+                    
+            if session_end:
+                try:
+                    session_end_dt = datetime.datetime.fromisoformat(session_end.replace('Z', '+00:00'))
+                    # Add buffer after session end too
+                    session_end_dt = session_end_dt + datetime.timedelta(minutes=5)  # 5 min buffer
+                except:
+                    session_end_dt = None
+                
+            # Find prompts for this user
+            user_prompts = []
+            for line in reversed(lines):
+                try:
+                    entry = json.loads(line)
+                    if entry.get("user_uuid") == user_uuid:
+                        user_prompts.append(entry)
+                except:
+                    continue
+            
+            # If we have session bounds, try to find prompt within session timeframe
+            if session_start_dt and session_end_dt and user_prompts:
+                for entry in user_prompts:
+                    try:
+                        prompt_time = datetime.datetime.fromisoformat(entry.get("timestamp", ""))
+                        if session_start_dt <= prompt_time <= session_end_dt:
+                            print(f"🔍 Found prompt within session timeframe: {entry.get('timestamp')}")
+                            return entry
+                    except:
+                        continue
+                
+                # If no prompt found in session timeframe, fall back to most recent for user
+                print(f"⚠️ No prompt found in session timeframe, using most recent for user")
+                return user_prompts[0] if user_prompts else {}
+            
+            # No session bounds or no prompts found, return most recent for user
+            return user_prompts[0] if user_prompts else {}
+                    
+    except Exception as e:
+        print(f"Error reading prompts log: {e}")
+    return {}
 
 @router.get("/sessions/{uuid}/deep-dive", response_class=HTMLResponse)
 async def session_deep_dive(
@@ -332,6 +378,32 @@ async def session_deep_dive(
     conversation = session.get('conversation', [])
     memory_transitions = session.get('memory_transitions', [])
     summary = session.get('summary', '')
+    summarization_events = session.get('summarization_events', [])
+
+    summarization_events_html = ""
+    if isinstance(summarization_events, list):
+        for event in summarization_events:
+            if isinstance(event, dict):
+                # Safely extract values
+                event_type = event.get("event_type", "unknown").replace("_", " ").title()
+                timestamp = event.get("timestamp", "")
+                details = event.get("details", {})
+            
+                # Safely get conversation length
+                if isinstance(details, dict):
+                    conversation_length = details.get("conversation_length", "Unknown")
+                else:
+                    conversation_length = "Unknown"
+            
+                summarization_events_html += f'''
+                <div class="memory-stage">
+                    <div class="memory-stage-title">{event_type}</div>
+                    <div>Time: {timestamp}</div>
+                    <div>Processed: {conversation_length} chars</div>
+                </div>
+                '''
+    else:
+        summarization_events_html = '<div class="memory-stage"><div class="memory-stage-title">No Events</div></div>'
     
     # Ensure stats is a dict before accessing .get()
     if not isinstance(stats, dict):
@@ -401,9 +473,15 @@ async def session_deep_dive(
     
     # Generate context parts HTML
     context_html = ""
-    for i, part in enumerate(context_parts[:2]):
-        context_html += f"<div>{part}</div>"
-        if i < len(context_parts[:2]) - 1:
+    for i, part in enumerate(context_parts):
+        # Truncate individual parts if they're too long
+        if len(part) > 5000:
+            truncated_part = part[:5000] + "..."
+        else:
+            truncated_part = part
+    
+        context_html += f"<div>{truncated_part}</div>"
+        if i < len(context_parts) - 1:
             context_html += "<br><br>"
 
     print(f"🚨 FINAL SESSION DATA KEYS: {list(session.keys())}")
@@ -852,6 +930,20 @@ async def session_deep_dive(
                         </div>
                     </div>
                 </div>
+
+                <!-- Summarization Events -->
+                <div class="card">
+                    <div class="card-header">
+                        <span class="card-icon">📝</span>
+                        <span class="card-title">Summarization Events</span>
+                    </div>
+                    <div class="card-body">
+                        <div class="memory-flow">
+                            {summarization_events_html}
+                        </div>
+                    </div>
+                </div>
+            </div>
             </div>
             
             <!-- Prompt Construction -->
@@ -900,7 +992,7 @@ async def session_deep_dive(
                             Complete Assembled Prompt
                             <span class="token-count">~{estimated_tokens} tokens</span>
                         </div>
-                        <div class="code-block">{final_prompt[:3000]}{'...' if len(final_prompt) > 3000 else ''}</div>
+                        <div class="code-block">{final_prompt[:15000]}{'...' if len(final_prompt) > 15000 else ''}</div>
                     </div>
                 </div>
             </div>
@@ -1014,7 +1106,7 @@ async def sessions_dashboard(
             uuid = session.get("uuid", "")
             if uuid:
                 # Get real conversation for this session
-                real_conversation = get_recent_interactions(uuid, limit=100)
+                real_conversation = get_all_session_memory(uuid)
                 real_conversation_data = {"conversation": real_conversation}
                 session["cost_estimate"] = calculate_session_cost(real_conversation_data).get("total_cost", 0.0)
             else:

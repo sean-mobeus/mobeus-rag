@@ -23,28 +23,6 @@ def get_summary(uuid: str) -> Optional[str]:
     """
     return execute_db_operation(_get_summary_impl, uuid)
 
-def _set_summary_impl(uuid: str, summary: str):
-    """Implementation of set_summary without error handling"""
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                INSERT INTO persistent_memory (uuid, summary)
-                VALUES (%s, %s)
-                ON CONFLICT (uuid) DO UPDATE
-                SET summary = EXCLUDED.summary,
-                    updated_at = CURRENT_TIMESTAMP
-                """, (uuid, summary)
-            )
-            conn.commit()
-
-def set_summary(uuid: str, summary: str):
-    """
-    Set or update long-term summary for a user/session.
-    We should not replace existing summaries instead store them as new entries with same UUID.
-    """
-    return execute_db_operation(_set_summary_impl, uuid, summary)
-
 def _append_to_summary_impl(uuid: str, new_info: str):
     """Implementation of append_to_summary without error handling"""
     with get_connection() as conn:

@@ -6,6 +6,7 @@ from datetime import datetime
 from typing import Optional, Dict, Any, List
 from memory.db import get_connection, execute_db_operation
 import runtime_config
+import json
 
 # Default summarization prompt
 DEFAULT_SUMMARY_PROMPT = """Please summarize the following conversation between a user and an AI assistant. Focus on:
@@ -84,7 +85,6 @@ def _get_all_session_memory_impl(uuid: str) -> List[Dict[str, Any]]:
 def get_all_session_memory(uuid: str) -> List[Dict[str, Any]]:
     """
     Get ALL session memory for a user (character-based, not count-based)
-    This replaces the old get_recent_interactions approach
     """
     return execute_db_operation(_get_all_session_memory_impl, uuid)
 
@@ -126,31 +126,54 @@ def check_and_manage_memory(uuid: str):
     # If we're approaching the limit (90% of max), trigger summarization
     if memory_size >= (limit * 0.9):
         print(f"📝 Session memory for {uuid} approaching limit ({memory_size}/{limit} chars). Triggering summarization...")
-        summarize_and_archive_session(uuid)
+        summarize_and_archive_session(uuid, "auto_limit")
 
-def summarize_and_archive_session(uuid: str):
+def log_summarization_event(uuid: str, event_type: str, details: Optional[dict] = None):
+    """Log summarization events for dashboard visibility"""
+    with open("summarization_events.jsonl", "a") as f:
+        entry = {
+            "timestamp": datetime.now().isoformat(),
+            "user_uuid": uuid,
+            "event_type": event_type,  # "auto_limit", "auto_disconnect", "manual_tool"
+            "details": details or {}
+        }
+        f.write(json.dumps(entry) + "\n")
+
+def summarize_and_archive_session(uuid: str, reason: str = "auto_limit"):
     """
     Summarize current session memory and move it to persistent memory
     """
     try:
         # Get conversation text for summarization
         conversation_text = format_conversation_for_summary(uuid)
+        print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} chars")
         
         if not conversation_text.strip():
             print(f"⚠️ No conversation to summarize for {uuid}")
             return
         
+        print(f"📝 GENERATING SUMMARY for {uuid}...")
         # Generate summary using OpenAI
         summary = generate_conversation_summary(conversation_text)
+        print(f"📝 SUMMARY GENERATED: {len(summary) if summary else 0} chars")
         
         if summary:
             # Store summary in persistent memory
             from memory.persistent_memory import append_to_summary
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             summary_with_timestamp = f"[{timestamp}] {summary}"
+            print(f"📝 STORING SUMMARY in persistent memory for {uuid}")
             append_to_summary(uuid, summary_with_timestamp)
             
+            # LOG THE EVENT
+            log_summarization_event(uuid, reason, {
+                "conversation_length": len(conversation_text),
+                "summary_length": len(summary),
+                "timestamp": timestamp
+            })
+            
             # Clear session memory
+            print(f"📝 CLEARING SESSION MEMORY for {uuid}")
             clear_session_memory(uuid)
             
             print(f"✅ Session memory summarized and archived for {uuid}")
@@ -159,6 +182,8 @@ def summarize_and_archive_session(uuid: str):
             
     except Exception as e:
         print(f"❌ Error summarizing session for {uuid}: {e}")
+        import traceback
+        traceback.print_exc()
 
 def generate_conversation_summary(conversation_text: str) -> Optional[str]:
     """
@@ -218,13 +243,3 @@ def get_memory_stats(uuid: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"❌ Error getting memory stats: {e}")
         return {}
-
-# Backward compatibility function (deprecated)
-def get_recent_interactions(uuid: str, limit: int = 5) -> List[Dict[str, Any]]:
-    """
-    DEPRECATED: Use get_all_session_memory() instead
-    This function is kept for backward compatibility
-    """
-    print("⚠️ get_recent_interactions is deprecated. Use get_all_session_memory() instead.")
-    all_memory = get_all_session_memory(uuid)
-    return all_memory[-limit:] if all_memory else []

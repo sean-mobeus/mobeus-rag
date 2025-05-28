@@ -11,46 +11,122 @@ class OpenAIRealtimeClient extends EventEmitter {
     this.connected = false;
     this.connecting = false;
     this.backendUrl = window.location.origin;
+    this.currentStrategy = "auto";
+    this.strategyChangeCallbacks = [];
+  }
+
+  /**
+   * Tool Strategy Control Methods
+   * Send strategy update to backend
+   */
+  sendStrategyUpdate(strategy) {
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) {
+      console.warn("⚠️ Cannot send strategy update - WebSocket not ready");
+      return false;
+    }
+
+    const strategyMessage = {
+      type: "strategy_update",
+      strategy: strategy,
+      timestamp: new Date().toISOString(),
+    };
+
+    this.socket.send(JSON.stringify(strategyMessage));
+    this.currentStrategy = strategy;
+
+    console.log(`🎛️ Strategy update sent: ${strategy}`);
+
+    // Notify callbacks
+    this.strategyChangeCallbacks.forEach((callback) => {
+      try {
+        callback(strategy);
+      } catch (error) {
+        console.error("Error in strategy change callback:", error);
+      }
+    });
+
+    return true;
+  }
+
+  /**
+   * Get current strategy
+   */
+  getCurrentStrategy() {
+    return this.currentStrategy;
+  }
+
+  /**
+   * Register callback for strategy changes
+   */
+  onStrategyChange(callback) {
+    if (typeof callback === "function") {
+      this.strategyChangeCallbacks.push(callback);
+    }
+  }
+
+  /**
+   * Remove strategy change callback
+   */
+  offStrategyChange(callback) {
+    const index = this.strategyChangeCallbacks.indexOf(callback);
+    if (index > -1) {
+      this.strategyChangeCallbacks.splice(index, 1);
+    }
   }
 
   /** Connect to backend websocket */
-  async connect(userUuid = null, instructions = null) {
+  async connect(
+    userUuid = null,
+    instructions = null,
+    initialStrategy = "auto"
+  ) {
     if (this.connecting || this.connected) return false;
     this.connecting = true;
-    const protocol = this.backendUrl.startsWith("https") ? "wss" : "ws";
-    const url = `${protocol}://${
-      window.location.host
-    }/api/realtime/chat?user_uuid=${encodeURIComponent(
-      userUuid || ""
-    )}&instructions=${encodeURIComponent(instructions || "")}`;
-    this.socket = new WebSocket(url);
+    this.userUuid = userUuid;
+    this.currentStrategy = initialStrategy;
+    try {
+      // Initialize audio context early
+      await this.initializeAudio();
+      // Include strategy in connection URL
+      const protocol = this.backendUrl.startsWith("https") ? "wss" : "ws";
+      const url = `${protocol}://${
+        window.location.host
+      }/api/realtime/chat?user_uuid=${encodeURIComponent(
+        userUuid || ""
+      )}&instructions=${encodeURIComponent(
+        instructions || ""
+      )}&tool_strategy=${encodeURIComponent(initialStrategy)}`;
 
-    this.socket.onopen = () => {
-      this.connected = true;
-      this.connecting = false;
-      this.emit("connected");
-    };
+      console.log("🔗 Connecting to backend WebSocket:", url);
+      this.socket = new WebSocket(url);
 
-    this.socket.onerror = (e) => {
-      this.emit("error", e);
-    };
+      this.socket.onopen = () => {
+        this.connected = true;
+        this.connecting = false;
+        this.emit("connected");
+      };
+    } catch (error) {
+      this.socket.onerror = (e) => {
+        this.emit("error", e);
+      };
 
-    this.socket.onclose = () => {
-      this.connected = false;
-      this.connecting = false;
-      this.emit("disconnected");
-    };
+      this.socket.onclose = () => {
+        this.connected = false;
+        this.connecting = false;
+        this.emit("disconnected");
+      };
 
-    this.socket.onmessage = (evt) => {
-      try {
-        const msg = JSON.parse(evt.data);
-        this.handleRealtimeEvent(msg);
-      } catch (err) {
-        console.error("Bad realtime message", err);
-      }
-    };
+      this.socket.onmessage = (evt) => {
+        try {
+          const msg = JSON.parse(evt.data);
+          this.handleRealtimeEvent(msg);
+        } catch (err) {
+          console.error("Bad realtime message", err);
+        }
+      };
 
-    return true;
+      return true;
+    }
   }
 
   /** Send event to backend */
@@ -100,6 +176,24 @@ class OpenAIRealtimeClient extends EventEmitter {
   /** Handle events coming from backend/OpenAI */
   handleRealtimeEvent(event) {
     const { type } = event;
+
+    // Handle strategy-related events
+    if (type === "strategy_updated") {
+      console.log("🎛️ Strategy update confirmed:", event.strategy);
+      this.currentStrategy = event.strategy;
+      this.emit("strategy.updated", event);
+
+      // Notify callbacks
+      this.strategyChangeCallbacks.forEach((callback) => {
+        try {
+          callback(event.strategy);
+        } catch (error) {
+          console.error("Error in strategy change callback:", error);
+        }
+      });
+      return;
+    }
+    // Handle other event types
     switch (type) {
       case "session.created":
         this.emit("session.created", event.session);
@@ -130,6 +224,51 @@ class OpenAIRealtimeClient extends EventEmitter {
         this.emit(type, event);
         break;
     }
+  }
+  /**
+   * Tool Strategy Presets
+   */
+
+  static TOOL_STRATEGIES = {
+    auto: {
+      label: "Auto",
+      color: "blue",
+      description: "Let AI decide when to use tools (balanced approach)",
+    },
+    conservative: {
+      label: "Minimal",
+      color: "green",
+      description: "Prefer direct responses, minimal tool usage",
+    },
+    aggressive: {
+      label: "Comprehensive",
+      color: "purple",
+      description: "Proactive tool usage for detailed responses",
+    },
+    none: {
+      label: "Direct Only",
+      color: "gray",
+      description: "Never use tools, direct responses only",
+    },
+    required: {
+      label: "Always Search",
+      color: "red",
+      description: "Always use tools before responding",
+    },
+  };
+
+  /**
+   * Get strategy information
+   */
+  getStrategyInfo(strategy) {
+    return WebSocketRealtimeClient.TOOL_STRATEGIES[strategy] || null;
+  }
+
+  /**
+   * Get available strategies
+   */
+  getAvailableStrategies() {
+    return WebSocketRealtimeClient.TOOL_STRATEGIES;
   }
 }
 

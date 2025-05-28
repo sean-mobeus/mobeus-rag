@@ -170,7 +170,7 @@ Key behaviors:
             # Import the actual functions (not the route handlers)
             from memory.user_identity import get_user
             from memory.persistent_memory import get_summary
-            from memory.session_memory import get_recent_interactions
+            from memory.session_memory import get_all_session_memory
             
             # Get user information
             user = get_user(user_uuid)
@@ -178,7 +178,7 @@ Key behaviors:
                 instructions += f"The user's name is {user['name']}. "
             
             # Add recent conversation context
-            recent = get_recent_interactions(user_uuid, limit=3)
+            recent = get_all_session_memory(user_uuid)
             if recent:
                 instructions += "\nRecent conversation context:\n"
                 for item in recent:
