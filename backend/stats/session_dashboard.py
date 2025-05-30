@@ -301,59 +301,79 @@ def get_latest_actual_prompt(user_uuid: str, session_start: Optional[str] = None
     """Get the actual prompt for a specific session timeframe"""
     try:
         prompts_log = os.path.join(LOG_DIR, os.getenv("MOBEUS_ACTUAL_PROMPTS_LOG", "actual_prompts.jsonl"))
-        if os.path.exists(prompts_log):
-            with open(prompts_log, "r") as f:
-                lines = f.readlines()
-                
-            # Convert session times to datetime objects for comparison
-            session_start_dt = None
-            session_end_dt = None
-            if session_start:
-                try:
-                    session_start_dt = datetime.datetime.fromisoformat(session_start.replace('Z', '+00:00'))
-                    # Make the window more generous - prompts often logged before first message
-                    session_start_dt = session_start_dt - datetime.timedelta(minutes=5)  # 5 min buffer
-                except:
-                    session_start_dt = None
-                    
-            if session_end:
-                try:
-                    session_end_dt = datetime.datetime.fromisoformat(session_end.replace('Z', '+00:00'))
-                    # Add buffer after session end too
-                    session_end_dt = session_end_dt + datetime.timedelta(minutes=5)  # 5 min buffer
-                except:
-                    session_end_dt = None
-                
-            # Find prompts for this user
-            user_prompts = []
-            for line in reversed(lines):
-                try:
-                    entry = json.loads(line)
-                    if entry.get("user_uuid") == user_uuid:
-                        user_prompts.append(entry)
-                except:
-                    continue
+        print(f"🔍 Looking for prompts in: {prompts_log}")
+        
+        if not os.path.exists(prompts_log):
+            print(f"❌ Prompts log not found: {prompts_log}")
+            return {}
             
-            # If we have session bounds, try to find prompt within session timeframe
-            if session_start_dt and session_end_dt and user_prompts:
+        with open(prompts_log, "r") as f:
+            lines = f.readlines()
+        
+        print(f"📝 Found {len(lines)} total prompt entries")
+        
+        # Find ALL prompts for this user first
+        user_prompts = []
+        for line in reversed(lines):  # Start from most recent
+            try:
+                entry = json.loads(line)
+                if entry.get("user_uuid") == user_uuid:
+                    user_prompts.append(entry)
+            except Exception as e:
+                print(f"⚠️ Error parsing line: {e}")
+                continue
+        
+        print(f"🎯 Found {len(user_prompts)} prompts for user {user_uuid}")
+        
+        if not user_prompts:
+            print(f"❌ No prompts found for user {user_uuid}")
+            return {}
+        
+        # If we have session bounds, try to find prompt within timeframe
+        if session_start and session_end:
+            print(f"🕐 Filtering by session timeframe: {session_start} to {session_end}")
+            
+            try:
+                # Be more generous with time parsing and buffering
+                session_start_dt = datetime.datetime.fromisoformat(session_start.replace('Z', '+00:00').replace('T', ' ').split('+')[0])
+                session_end_dt = datetime.datetime.fromisoformat(session_end.replace('Z', '+00:00').replace('T', ' ').split('+')[0])
+                
+                # Add generous buffers (30 minutes before and after)
+                session_start_dt = session_start_dt - datetime.timedelta(minutes=30)
+                session_end_dt = session_end_dt + datetime.timedelta(minutes=30)
+                
+                print(f"🕐 Expanded search window: {session_start_dt} to {session_end_dt}")
+                
                 for entry in user_prompts:
+                    timestamp_str = entry.get("timestamp", "")
                     try:
-                        prompt_time = datetime.datetime.fromisoformat(entry.get("timestamp", ""))
-                        if session_start_dt <= prompt_time <= session_end_dt:
-                            print(f"🔍 Found prompt within session timeframe: {entry.get('timestamp')}")
-                            return entry
-                    except:
+                        if timestamp_str:
+                            # Handle different timestamp formats more robustly
+                            prompt_time = datetime.datetime.fromisoformat(timestamp_str.replace('Z', '+00:00').replace('T', ' ').split('+')[0])
+                            
+                            print(f"🔍 Checking prompt time: {prompt_time}")
+                            
+                            if session_start_dt <= prompt_time <= session_end_dt:
+                                print(f"✅ Found prompt within session timeframe!")
+                                return entry
+                    except Exception as e:
+                        print(f"⚠️ Error parsing timestamp '{timestamp_str}': {e}")
                         continue
                 
-                # If no prompt found in session timeframe, fall back to most recent for user
-                print(f"⚠️ No prompt found in session timeframe, using most recent for user")
-                return user_prompts[0] if user_prompts else {}
-            
-            # No session bounds or no prompts found, return most recent for user
-            return user_prompts[0] if user_prompts else {}
+                print(f"⚠️ No prompt found in session timeframe, using most recent")
+                
+            except Exception as e:
+                print(f"⚠️ Error with session timeframe logic: {e}")
+        
+        # Always fall back to most recent prompt for this user
+        print(f"✅ Returning most recent prompt for user")
+        return user_prompts[0]
                     
     except Exception as e:
-        print(f"Error reading prompts log: {e}")
+        print(f"❌ Error reading prompts log: {e}")
+        import traceback
+        traceback.print_exc()
+    
     return {}
 
 @router.get("/sessions/{uuid}/deep-dive", response_class=HTMLResponse)
