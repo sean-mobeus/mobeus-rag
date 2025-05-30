@@ -166,10 +166,20 @@ def log_summarization_event(uuid: str, event_type: str, details: Optional[dict] 
     execute_db_operation(_log_to_db)
 
 def store_session_prompt(user_uuid: str, prompt_data: dict):
-    """Store the actual prompt used for a session"""
+    """Store the actual prompt used for a session - ENHANCED DEBUG VERSION"""
     def _store_impl():
         with get_connection() as conn:
             with conn.cursor() as cur:
+                # Enhanced debugging
+                final_prompt = prompt_data.get('final_prompt', '')
+                prompt_length = len(final_prompt)
+                
+                print(f"🔍 STORING PROMPT for {user_uuid}:")
+                print(f"   - Final prompt length: {prompt_length} chars")
+                print(f"   - Strategy: {prompt_data.get('strategy', 'auto')}")
+                print(f"   - Model: {prompt_data.get('model', 'unknown')}")
+                print(f"   - Estimated tokens: {prompt_data.get('estimated_tokens', 0)}")
+                
                 cur.execute("""
                     INSERT INTO session_prompts 
                     (uuid, system_prompt, persistent_summary, session_context, 
@@ -180,13 +190,23 @@ def store_session_prompt(user_uuid: str, prompt_data: dict):
                     prompt_data.get('system_prompt', ''),
                     prompt_data.get('persistent_summary', ''),
                     prompt_data.get('session_context', ''),
-                    prompt_data.get('final_prompt', ''),
-                    prompt_data.get('prompt_length', 0),
+                    final_prompt,
+                    prompt_length,
                     prompt_data.get('estimated_tokens', 0),
                     prompt_data.get('strategy', 'auto'),
                     prompt_data.get('model', '')
                 ))
                 conn.commit()
+                
+                # Verify the data was stored
+                cur.execute("""
+                    SELECT COUNT(*), MAX(prompt_length) 
+                    FROM session_prompts 
+                    WHERE uuid = %s
+                """, (user_uuid,))
+                
+                count, max_length = cur.fetchone()
+                print(f"✅ VERIFICATION: {count} prompt records for {user_uuid}, max length: {max_length}")
     
     execute_db_operation(_store_impl)
     print(f"✅ Stored prompt data for session {user_uuid}")
@@ -405,3 +425,48 @@ def store_session_snapshot_before_summarization(uuid: str, reason: str):
         import traceback
         traceback.print_exc()
         return 0
+    
+def debug_prompt_storage(uuid: str):
+    """Debug function to check what prompt data exists for a session"""
+    def _debug_impl():
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Check if table exists
+                cur.execute("""
+                    SELECT COUNT(*) FROM information_schema.tables 
+                    WHERE table_name = 'session_prompts'
+                """)
+                table_exists = cur.fetchone()[0] > 0
+                print(f"🔍 session_prompts table exists: {table_exists}")
+                
+                if not table_exists:
+                    return {"error": "session_prompts table does not exist"}
+                
+                # Check all records for this UUID
+                cur.execute("""
+                    SELECT id, created_at, prompt_length, strategy, model, 
+                           LENGTH(final_prompt) as actual_prompt_length
+                    FROM session_prompts 
+                    WHERE uuid = %s 
+                    ORDER BY created_at DESC
+                """, (uuid,))
+                
+                records = []
+                for row in cur.fetchall():
+                    records.append({
+                        "id": row[0],
+                        "created_at": row[1].isoformat() if row[1] else None,
+                        "stored_prompt_length": row[2],
+                        "actual_prompt_length": row[5],
+                        "strategy": row[3],
+                        "model": row[4]
+                    })
+                
+                return {
+                    "total_records": len(records),
+                    "records": records
+                }
+    
+    result = execute_db_operation(_debug_impl)
+    print(f"🔍 PROMPT DEBUG for {uuid}: {result}")
+    return result

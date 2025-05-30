@@ -4,7 +4,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile
+import datetime
 from openai import OpenAI
 from config import OPENAI_API_KEY
 from pydantic import BaseModel
@@ -215,3 +215,73 @@ async def debug_session_data(uuid: str):
         }
     except Exception as e:
         return {"error": str(e), "uuid": uuid}
+    
+@app.get("/debug/prompt-storage/{uuid}")
+async def debug_prompt_storage_endpoint(uuid: str):
+    """Debug prompt storage for a specific session UUID"""
+    try:
+        from memory.session_memory import debug_prompt_storage
+        result = debug_prompt_storage(uuid)
+        return {
+            "uuid": uuid,
+            "debug_result": result,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "uuid": uuid,
+            "error": str(e),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+@app.get("/debug/conversation-data/{uuid}")
+async def debug_conversation_data_endpoint(uuid: str):
+    """Debug conversation data retrieval for Bug #2"""
+    try:
+        from memory.session_memory import get_all_session_memory
+        from memory.db import get_connection, execute_db_operation
+        
+        # Get current session memory
+        current_session = get_all_session_memory(uuid)
+        
+        # Get historical interaction logs
+        def _get_historical():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT user_message, assistant_response, created_at, interaction_id
+                        FROM interaction_logs
+                        WHERE uuid = %s
+                        ORDER BY created_at DESC
+                        LIMIT 5
+                    """, (uuid,))
+                    
+                    return [
+                        {
+                            "user_message": row[0][:100] + "..." if row[0] and len(row[0]) > 100 else row[0],
+                            "assistant_response": row[1][:100] + "..." if row[1] and len(row[1]) > 100 else row[1],
+                            "created_at": row[2].isoformat() if row[2] else None,
+                            "interaction_id": row[3]
+                        }
+                        for row in cur.fetchall()
+                    ]
+        
+        historical_data = execute_db_operation(_get_historical) or []
+        
+        return {
+            "uuid": uuid,
+            "current_session_count": len(current_session),
+            "current_session_preview": current_session[:2] if current_session else [],
+            "historical_interactions_count": len(historical_data),
+            "historical_interactions_preview": historical_data,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "uuid": uuid,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.datetime.now().isoformat()
+        }

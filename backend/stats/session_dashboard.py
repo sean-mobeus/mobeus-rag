@@ -1,4 +1,4 @@
-# session_dashboard.py - FIXED VERSION
+# session_dashboard.py 
 import os
 import json
 import datetime
@@ -21,6 +21,184 @@ TOKEN_PRICING = {
     "gpt-3.5-turbo": {"input": 0.0015, "output": 0.002},
     "gpt-4o-realtime-preview-2024-12-17": {"input": 0.005, "output": 0.02}  # Realtime pricing
 }
+
+def get_comprehensive_conversation_data(uuid: str) -> List[Dict[str, Any]]:
+    """
+    BUG #2 FIX: Get conversation data from BOTH current session memory AND historical interaction logs
+    This ensures we show conversation even after summarization has cleared session memory
+    """
+    all_messages = []
+    
+    try:
+        # STEP 1: Get current session memory (if any)
+        current_session = get_all_session_memory(uuid)
+        print(f"🔍 Current session messages: {len(current_session)}")
+        
+        # Add current session messages
+        for msg in current_session:
+            all_messages.append({
+                "role": msg["role"],
+                "message": msg["message"],
+                "created_at": msg["created_at"].isoformat() if hasattr(msg["created_at"], 'isoformat') else str(msg["created_at"]),
+                "source": "current_session"
+            })
+        
+        # STEP 2: Get historical interaction logs (the missing piece!)
+        def _get_historical_interactions():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT user_message, assistant_response, created_at, interaction_id
+                        FROM interaction_logs
+                        WHERE uuid = %s
+                        ORDER BY created_at ASC
+                    """, (uuid,))
+                    
+                    historical_pairs = []
+                    for row in cur.fetchall():
+                        user_msg, assistant_msg, created_at, interaction_id = row
+                        
+                        # Add user message
+                        if user_msg:
+                            historical_pairs.append({
+                                "role": "user",
+                                "message": user_msg,
+                                "created_at": created_at.isoformat() if created_at else "",
+                                "source": "historical_logs",
+                                "interaction_id": interaction_id
+                            })
+                        
+                        # Add assistant message
+                        if assistant_msg:
+                            historical_pairs.append({
+                                "role": "assistant", 
+                                "message": assistant_msg,
+                                "created_at": created_at.isoformat() if created_at else "",
+                                "source": "historical_logs",
+                                "interaction_id": interaction_id
+                            })
+                    
+                    return historical_pairs
+        
+        historical_messages = execute_db_operation(_get_historical_interactions) or []
+        print(f"🔍 Historical messages: {len(historical_messages)}")
+        
+        # Combine and sort by timestamp
+        all_messages.extend(historical_messages)
+        
+        # Sort by created_at timestamp
+        all_messages.sort(key=lambda x: x.get("created_at", ""))
+        
+        print(f"✅ Total conversation messages retrieved: {len(all_messages)}")
+        return all_messages
+        
+    except Exception as e:
+        print(f"❌ Error getting comprehensive conversation: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def get_comprehensive_final_prompt_fixed(uuid: str) -> Dict[str, Any]:
+    """
+    BUG #2 FIX: Enhanced prompt retrieval with better error handling and data validation
+    """
+    try:
+        def _get_latest_prompt():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Check if session_prompts table exists and has data
+                    cur.execute("""
+                        SELECT COUNT(*) FROM session_prompts WHERE uuid = %s
+                    """, (uuid,))
+                    
+                    count = cur.fetchone()[0]
+                    print(f"🔍 Found {count} prompt records for {uuid}")
+                    
+                    if count == 0:
+                        return None
+                    
+                    # Get the latest prompt
+                    cur.execute("""
+                        SELECT 
+                            system_prompt, persistent_summary, session_context,
+                            final_prompt, prompt_length, estimated_tokens,
+                            strategy, model, created_at
+                        FROM session_prompts
+                        WHERE uuid = %s
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    """, (uuid,))
+                    
+                    row = cur.fetchone()
+                    if row:
+                        (system_prompt, persistent_summary, session_context, 
+                         final_prompt, prompt_length, estimated_tokens,
+                         strategy, model, created_at) = row
+                        
+                        return {
+                            "final_prompt": final_prompt or "No final prompt content",
+                            "source": "DATABASE_RETRIEVED",
+                            "system_prompt": system_prompt or "",
+                            "persistent_summary": persistent_summary or "",
+                            "session_context": session_context or "",
+                            "prompt_length": prompt_length or 0,
+                            "estimated_tokens": estimated_tokens or 0,
+                            "strategy": strategy or "auto",
+                            "model": model or "unknown",
+                            "timestamp": created_at.isoformat() if created_at else ""
+                        }
+                    return None
+        
+        db_result = execute_db_operation(_get_latest_prompt)
+        
+        if db_result:
+            print(f"✅ Retrieved prompt data: {db_result['prompt_length']} chars, strategy: {db_result['strategy']}")
+            return db_result
+        else:
+            print(f"⚠️ No prompt data found in database for {uuid}")
+            
+    except Exception as e:
+        print(f"❌ Error getting comprehensive prompt for {uuid}: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Fallback: Try to get from recent logs file
+    try:
+        prompts_log = os.path.join(LOG_DIR, "actual_prompts.jsonl")
+        if os.path.exists(prompts_log):
+            print(f"🔍 Checking prompts log file for {uuid}")
+            with open(prompts_log, "r") as f:
+                for line in reversed(f.readlines()):
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("user_uuid") == uuid:
+                            print(f"✅ Found prompt in log file: {len(entry.get('final_prompt', ''))} chars")
+                            return {
+                                "final_prompt": entry.get("final_prompt", ""),
+                                "source": "LOGFILE_FALLBACK",
+                                "prompt_length": entry.get("prompt_length", 0),
+                                "estimated_tokens": entry.get("estimated_tokens", 0),
+                                "strategy": entry.get("strategy", "auto"),
+                                "model": entry.get("model", "unknown"),
+                                "timestamp": entry.get("timestamp", "")
+                            }
+                    except:
+                        continue
+    except Exception as e:
+        print(f"⚠️ Error checking log file: {e}")
+    
+    return {
+        "final_prompt": "No prompt data available for this session",
+        "source": "NOT_AVAILABLE",
+        "system_prompt": "",
+        "persistent_summary": "",
+        "session_context": "",
+        "prompt_length": 0,
+        "estimated_tokens": 0,
+        "strategy": "auto",
+        "model": "unknown",
+        "timestamp": ""
+    }
 
 def get_session_historical_stats(uuid: str) -> Dict[str, Any]:
     """Get comprehensive historical session statistics from database"""
@@ -80,7 +258,6 @@ def get_session_historical_stats(uuid: str) -> Dict[str, Any]:
                     }
         
         return execute_db_operation(_get_historical_stats)
-        return result if isinstance(result, dict) else {}
     except Exception as e:
         print(f"Error getting historical stats for {uuid}: {e}")
         return {}
@@ -292,60 +469,15 @@ def get_active_sessions(limit: int = 100):
         traceback.print_exc()
         return []
 
-def get_comprehensive_final_prompt(uuid: str) -> Dict[str, Any]:
-    """Get the complete, actual final prompt used for this session"""
-    try:
-        def _get_latest_prompt():
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT 
-                            system_prompt, persistent_summary, session_context,
-                            final_prompt, prompt_length, estimated_tokens,
-                            strategy, model, created_at
-                        FROM session_prompts
-                        WHERE uuid = %s
-                        ORDER BY created_at DESC
-                        LIMIT 1
-                    """, (uuid,))
-                    
-                    row = cur.fetchone()
-                    if row:
-                        (system_prompt, persistent_summary, session_context, 
-                         final_prompt, prompt_length, estimated_tokens,
-                         strategy, model, created_at) = row
-                        
-                        return {
-                            "final_prompt": "No prompt data available for this session",
-                            "source": "NOT_AVAILABLE",
-                            "system_prompt": "",
-                            "persistent_summary": "",
-                            "session_context": "",
-                            "prompt_length": 0,
-                            "estimated_tokens": 0,
-                            "strategy": "auto",
-                            "model": "unknown",
-                            "timestamp": ""
-                        }
-                    return {}
-        
-        db_result = execute_db_operation(_get_latest_prompt)
-        if db_result:
-            return db_result
-            
-    except Exception as e:
-        print(f"Error getting comprehensive prompt for {uuid}: {e}")
-    
-    return {
-        "final_prompt": "No prompt data available for this session",
-        "source": "NOT_AVAILABLE"
-    }
-
 def get_session_deep_dive(uuid: str):
-    """Get comprehensive session analysis with FIXED data persistence"""
+    """
+    BUG #2 FIXED: Get comprehensive session analysis with FIXED conversation and prompt retrieval
+    """
     try:
-        # Get conversation data
-        conversation = get_all_session_memory(uuid)
+        # BUG #2 FIX: Use the new comprehensive conversation function
+        conversation = get_comprehensive_conversation_data(uuid)
+        print(f"🔍 Deep dive conversation data: {len(conversation)} messages")
+        
         summary = get_summary(uuid)
         memory_stats = get_memory_stats(uuid)
         
@@ -369,8 +501,8 @@ def get_session_deep_dive(uuid: str):
             "rag_enabled": runtime_config.get("RAG_ENABLED", True)
         }
         
-        # FIXED: Ensure prompt_construction is always a dict
-        prompt_construction = get_comprehensive_final_prompt(uuid)
+        # BUG #2 FIX: Use the fixed prompt retrieval function
+        prompt_construction = get_comprehensive_final_prompt_fixed(uuid)
         if not isinstance(prompt_construction, dict):
             prompt_construction = {"final_prompt": "No prompt data available", "source": "NOT_AVAILABLE"}
         
@@ -393,19 +525,19 @@ def get_session_deep_dive(uuid: str):
         
         return {
             "uuid": uuid,
-            "conversation": conversation,
+            "conversation": conversation,  # Now includes historical data!
             "summary": summary,
             "stats": stats,
             "memory_stats": memory_stats,
             "memory_transitions": memory_transitions,
-            "prompt_construction": prompt_construction,
+            "prompt_construction": prompt_construction,  # Now uses fixed retrieval!
             "cost_analysis": cost_analysis,
             "session_config": current_config,
             "summarization_events": summarization_events
         }
         
     except Exception as e:
-        print(f"Error getting session deep dive: {e}")
+        print(f"❌ Error getting session deep dive: {e}")
         import traceback
         traceback.print_exc()
         return {"uuid": uuid, "error": str(e)}
@@ -430,7 +562,7 @@ async def session_deep_dive(
     request: Request,
     uuid: str = Path(..., description="Session UUID")
 ):
-    """Enhanced session view with FIXED UI and data persistence"""
+    """Enhanced session view with BUG #2 FIXED - Conversation & Prompt Retrieval"""
     print(f"🔍 Deep dive requested for UUID: {uuid}")
     
     session: Dict[str, Any] = get_session_deep_dive(uuid)
@@ -516,48 +648,61 @@ async def session_deep_dive(
         </div>
         '''
     
-    # Generate conversation HTML with proper JavaScript escaping
+    # BUG #2 FIXED: Generate conversation HTML with ACTUAL conversation data
     conversation_html = ""
-    for i, interaction in enumerate((conversation or [])[-15:]):  # Last 15 messages
-        if isinstance(interaction, dict):
-            role = interaction.get("role", "")
+    if conversation and len(conversation) > 0:
+        print(f"✅ Generating HTML for {len(conversation)} conversation messages")
+        
+        # Show last 20 messages for better performance
+        recent_conversation = conversation[-20:] if len(conversation) > 20 else conversation
+        
+        for i, interaction in enumerate(recent_conversation):
+            role = interaction.get("role", "unknown")
             message = interaction.get("message", "")
             created_at = interaction.get("created_at", "")
-        else:
-            role = ""
-            message = str(interaction)
-            created_at = ""
-    
-        message_preview = message[:300] + ('...' if len(message) > 300 else '')
-    
-        # FIXED: Properly escape message for JavaScript
-        analyze_button = ""
-        if role == "assistant":
-            # Properly escape the message for JavaScript
-            escaped_message = json.dumps(message[:500])  # JSON encoding handles all escaping
-            analyze_button = f'''
-            <div style="margin-top: 0.5rem;">
-                <button class="analyze-btn" onclick="analyzeMessage({i}, {escaped_message})">
-                    🔍 Analyze Response
-                </button>
+            source = interaction.get("source", "unknown")
+            
+            message_preview = message[:400] + ('...' if len(message) > 400 else '')
+        
+            # Add source indicator
+            source_badge = f'<span style="background: {"#10b981" if source == "current_session" else "#f59e0b"}; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.7rem; margin-left: 0.5rem;">{source.replace("_", " ").title()}</span>'
+            
+            # FIXED: Properly escape message for JavaScript
+            analyze_button = ""
+            if role == "assistant":
+                # Properly escape the message for JavaScript string literal
+                message_for_js = message[:500].replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                analyze_button = f'''
+                <div style="margin-top: 0.5rem;">
+                    <button class="analyze-btn" onclick="analyzeMessage({i}, '{message_for_js}')">
+                        🔍 Analyze Response
+                    </button>
+                </div>
+                '''
+        
+            conversation_html += f'''
+            <div class="message {role}" style="margin-bottom: 1rem; padding: 1rem; border-radius: 0.5rem; {'border-left: 4px solid var(--primary-color);' if role == 'user' else 'border-left: 4px solid var(--accent-color);'} background: {'rgba(37, 99, 235, 0.1)' if role == 'user' else 'rgba(6, 214, 160, 0.1)'};">
+                <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; font-size: 0.875rem; opacity: 0.8;">
+                    <span style="font-weight: 600;">{role.title()}{source_badge}</span>
+                    <span>{created_at.split('T')[0] if 'T' in created_at else created_at}</span>
+                </div>
+                <div class="message-content" style="font-size: 0.9rem; line-height: 1.4;">{message_preview}</div>
+                {analyze_button}
             </div>
             '''
-    
-        conversation_html += f'''
-        <div class="message {role}" style="margin-bottom: 1rem; padding: 1rem; border-radius: 0.5rem; {'border-left: 4px solid var(--primary-color);' if role == 'user' else 'border-left: 4px solid var(--accent-color);'} background: {'rgba(37, 99, 235, 0.1)' if role == 'user' else 'rgba(6, 214, 160, 0.1)'};">
-            <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; font-size: 0.875rem; opacity: 0.8;">
-                <span style="font-weight: 600;">{role.title()}</span>
-                <span>{created_at}</span>
-            </div>
-            <div class="message-content" style="font-size: 0.9rem; line-height: 1.4;">{message_preview}</div>
-            {analyze_button}
+    else:
+        conversation_html = '''
+        <div style="padding: 2rem; text-align: center; opacity: 0.7; border: 1px dashed var(--border-color); border-radius: 0.5rem;">
+            <strong>No Conversation Data Found</strong><br>
+            <small>No messages found in current session memory or historical interaction logs.</small>
         </div>
         '''
 
-    # Add final prompt section
+    # BUG #2 FIXED: Add final prompt section with proper data
     final_prompt_section = ""
-    if prompt_construction.get("final_prompt"):
-        final_prompt = prompt_construction["final_prompt"]
+    final_prompt = prompt_construction.get("final_prompt", "")
+    
+    if final_prompt and final_prompt != "No prompt data available for this session":
         prompt_length = len(final_prompt)
         estimated_tokens = prompt_construction.get("estimated_tokens", prompt_length // 4)
         
@@ -565,9 +710,9 @@ async def session_deep_dive(
         <div class="card">
             <div class="card-header">
                 <span class="card-icon">📜</span>
-                <span class="card-title">Final Prompt Sent to OpenAI</span>
+                <span class="card-title">Final Prompt Sent to OpenAI </span>
                 <span style="font-size: 0.875rem; color: var(--accent-color);">
-                    {prompt_length:,} chars | ~{estimated_tokens:,} tokens
+                    {prompt_length:,} chars | ~{estimated_tokens:,} tokens | Source: {prompt_construction.get("source", "Unknown")}
                 </span>
             </div>
             <div class="card-body">
@@ -575,9 +720,25 @@ async def session_deep_dive(
                     <pre style="margin: 0; font-family: 'Courier New', monospace; font-size: 0.8rem; line-height: 1.4; white-space: pre-wrap; color: var(--matrix-green);">{final_prompt}</pre>
                 </div>
                 <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(6, 214, 160, 0.1); border: 1px solid var(--accent-color); border-radius: 0.375rem;">
-                    <strong style="color: var(--accent-color);">Source:</strong> {prompt_construction.get("source", "Unknown")} | 
                     <strong style="color: var(--accent-color);">Strategy:</strong> {prompt_construction.get("strategy", "auto")} |
-                    <strong style="color: var(--accent-color);">Model:</strong> {prompt_construction.get("model", "unknown")}
+                    <strong style="color: var(--accent-color);">Model:</strong> {prompt_construction.get("model", "unknown")} |
+                    <strong style="color: var(--accent-color);">Timestamp:</strong> {prompt_construction.get("timestamp", "Unknown")[:19] if prompt_construction.get("timestamp") else "Unknown"}
+                </div>
+            </div>
+        </div>
+        '''
+    else:
+        final_prompt_section = f'''
+        <div class="card">
+            <div class="card-header">
+                <span class="card-icon">⚠️</span>
+                <span class="card-title">Final Prompt (Not Available)</span>
+            </div>
+            <div class="card-body">
+                <div style="padding: 2rem; text-align: center; opacity: 0.7; border: 1px dashed var(--border-color); border-radius: 0.5rem;">
+                    <strong>No Prompt Data Available</strong><br>
+                    <small>Source: {prompt_construction.get("source", "Unknown")}</small><br>
+                    <small>This may indicate the session was created before prompt logging was implemented.</small>
                 </div>
             </div>
         </div>
@@ -589,7 +750,7 @@ async def session_deep_dive(
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Mobeus Assistant — Session Deep Dive</title>
+        <title>Mobeus Assistant — Session Deep Dive </title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
         <style>
             :root {{
@@ -817,19 +978,30 @@ async def session_deep_dive(
                 opacity: 0.8;
                 text-transform: uppercase;
             }}
-            
-            @media (max-width: 768px) {{
-                .grid {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                .metrics-grid {{
-                    grid-template-columns: repeat(2, 1fr);
-                }}
+            /* Matrix Digital Rain Effect */
+            .matrix-bg {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+                z-index: -1;
+                overflow: hidden;
+            }}
+
+            #matrix-canvas {{
+                width: 100%;
+                height: 100%;
+                opacity: 0.4;
             }}
         </style>
     </head>
     <body>
+        <div class="matrix-bg">
+            <canvas id="matrix-canvas"></canvas>
+        </div>
+
         <div class="container">
             <div class="breadcrumb">
                 <a href="/admin/">Dashboard</a>
@@ -842,13 +1014,16 @@ async def session_deep_dive(
             <div class="header">
                 <h1>🌐 SESSION DEEP DIVE</h1>
                 <div class="session-id">UUID: {session.get('uuid', 'Unknown')}</div>
+                <div style="font-size: 0.875rem; margin-top: 0.5rem; color: var(--accent-color);">
+                    ✅ Conversation: {len(conversation)} messages | Prompt: {prompt_construction.get("source", "Unknown")}
+                </div>
             </div>
             
             <!-- Overview Metrics -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-icon">📊</span>
-                    <span class="card-title">Session Matrix (FIXED - With Historical Data)</span>
+                    <span class="card-title">Session Matrix</span>
                 </div>
                 <div class="metrics-grid">
                     <div class="metric">
@@ -884,7 +1059,7 @@ async def session_deep_dive(
                 <div class="card">
                     <div class="card-header">
                         <span class="card-icon">💰</span>
-                        <span class="card-title">Cost Analysis (FIXED)</span>
+                        <span class="card-title">Cost Analysis</span>
                     </div>
                     <div class="cost-breakdown">
                         <div class="cost-item">
@@ -935,29 +1110,32 @@ async def session_deep_dive(
                 </div>
             </div>
             
-            <!-- Summarization Events (FIXED UI) -->
+            <!-- Summarization Events -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-icon">📝</span>
-                    <span class="card-title">Summarization Events (FIXED - Clean UI)</span>
+                    <span class="card-title">Summarization Events</span>
                 </div>
                 <div style="max-height: 500px; overflow-y: auto;">
                     {summarization_events_html}
                 </div>
             </div>
             
-            <!-- Conversation Flow (FIXED) -->
+            <!-- Conversation Flow -->
             <div class="card">
                 <div class="card-header">
                     <span class="card-icon">💬</span>
-                    <span class="card-title">Conversation Flow (FIXED)</span>
+                    <span class="card-title">Conversation Flow</span>
+                    <span style="color: var(--accent-color); font-size: 0.875rem;">
+                        {len(conversation)} messages loaded
+                    </span>
                 </div>
                 <div class="conversation-flow">
                     {conversation_html}
                 </div>
             </div>
             
-            <!-- Final Prompt Section (NEW) -->
+            <!-- Final Prompt Section -->
             {final_prompt_section}
             
             <!-- Session Configuration -->
@@ -1086,7 +1264,82 @@ async def session_deep_dive(
                 }}
             }}
             
-            console.log('✅ Session Deep Dive loaded with FIXED data persistence and UI');
+            console.log('✅ Session Deep Dive loaded with Conversation & Prompt Data');
+            console.log('📊 Conversation messages loaded:', sessionData.conversation ? sessionData.conversation.length : 0);
+            console.log('📜 Prompt data source:', sessionData.prompt_construction ? sessionData.prompt_construction.source : 'Unknown');
+
+ // Matrix Digital Rain Effect
+            class MatrixRain {{
+                constructor() {{
+                    this.canvas = document.getElementById('matrix-canvas');
+                    this.ctx = this.canvas.getContext('2d');
+                    this.characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()_+-=[]{{}}|;:,.<>?アイウエオカキクケコ';
+                    
+                    this.resize();
+                    this.init();
+                    this.animate();
+                    
+                    // Throttled resize handler
+                    let resizeTimeout;
+                    window.addEventListener('resize', () => {{
+                        clearTimeout(resizeTimeout);
+                        resizeTimeout = setTimeout(() => this.resize(), 250);
+                    }});
+                }}
+                
+                resize() {{
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
+                    
+                    this.fontSize = 14;
+                    this.columns = Math.floor(this.canvas.width / this.fontSize);
+                    this.drops = new Array(this.columns).fill(1);
+                    
+                    // Set canvas style for smooth rendering
+                    this.ctx.fillStyle = '#00ff41';
+                    this.ctx.font = `${{this.fontSize}}px 'Courier New', monospace`;
+                }}
+                
+                init() {{
+                    // Initialize drops array
+                    for (let i = 0; i < this.columns; i++) {{
+                        this.drops[i] = Math.random() * -100;
+                    }}
+                }}
+                
+                animate() {{
+                    // Semi-transparent background for trail effect
+                    this.ctx.fillStyle = 'rgba(15, 23, 42, 0.05)';
+                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                    
+                    // Set text color
+                    this.ctx.fillStyle = '#00ff41';
+                    
+                    // Draw characters
+                    for (let i = 0; i < this.drops.length; i++) {{
+                        const char = this.characters[Math.floor(Math.random() * this.characters.length)];
+                        const x = i * this.fontSize;
+                        const y = this.drops[i] * this.fontSize;
+                        
+                        this.ctx.fillText(char, x, y);
+                        
+                        // Reset drop when it goes off screen
+                        if (y > this.canvas.height && Math.random() > 0.975) {{
+                            this.drops[i] = 0;
+                        }}
+                        
+                        this.drops[i]++;
+                    }}
+                    
+                    // Request next frame (60fps max)
+                    requestAnimationFrame(() => this.animate());
+                }}
+            }}
+            
+            // Initialize Matrix effect - MUCH lighter
+            document.addEventListener('DOMContentLoaded', () => {{
+                new MatrixRain();
+            }});
         </script>
     </body>
     </html>
@@ -1179,7 +1432,7 @@ async def sessions_dashboard(
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Mobeus Assistant — Session Management Dashboard (FIXED)</title>
+        <title>Mobeus Assistant — Session Management Dashboard </title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
         <style>
             :root {{
@@ -1379,16 +1632,16 @@ async def sessions_dashboard(
             <div class="breadcrumb">
                 <a href="/admin/">Dashboard</a>
                 <span>/</span>
-                <span>Sessions (FIXED - With Historical Data)</span>
+                <span>Sessions</span>
             </div>
             
             <div class="header">
-                <h1>🎯 Session Management Dashboard (FIXED)</h1>
+                <h1>🎯 Session Management Dashboard </h1>
             </div>
             
             <div class="card">
                 <div class="card-header">
-                    📊 Session Overview (FIXED - Includes Historical Data)
+                    📊 Session Overview
                 </div>
                 <div class="card-body">
                     <div class="metrics-grid">
@@ -1418,7 +1671,7 @@ async def sessions_dashboard(
             
             <div class="card">
                 <div class="card-header">
-                    🔍 All Sessions (FIXED - Persistent Data)
+                    🔍 All Sessions
                     <span>{total_sessions} sessions</span>
                 </div>
                 <div class="card-body">
@@ -1442,7 +1695,6 @@ async def sessions_dashboard(
                 </div>
             </div>
         </div>
-        
         <script>
             const dashboardData = {data_json};
             console.log('✅ Sessions Dashboard loaded with FIXED historical data integration');
