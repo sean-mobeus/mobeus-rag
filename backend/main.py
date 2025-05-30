@@ -4,7 +4,7 @@ from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from contextlib import asynccontextmanager
 from fastapi.middleware.cors import CORSMiddleware
-import tempfile
+import datetime
 from openai import OpenAI
 from config import OPENAI_API_KEY
 from pydantic import BaseModel
@@ -69,7 +69,7 @@ app.include_router(openai_realtime_tokens.router)
 app.include_router(main_dashboard_router, prefix="/admin")      # /admin/ (main dashboard)
 app.include_router(debug_dashboard_router, prefix="/admin")     # /admin/debug
 app.include_router(config_dashboard_router, prefix="/admin")    # /admin/config
-app.include_router(session_dashboard_router, prefix="/admin")   # /admin/session
+app.include_router(session_dashboard_router, prefix="/admin")   # /admin/sessions
 app.include_router(tools_dashboard_router, prefix="/admin")      # /admin/tools
 
 
@@ -125,6 +125,43 @@ async def query_rag_endpoint(payload: QueryRequest):
 
     except Exception as e:
         print("❌ Exception occurred during RAG query:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Endpoint to clear both session and persistent memory
+@app.post("/api/clear-memory")
+async def clear_memory_endpoint(payload: QueryRequest):  # Reusing QueryRequest which has uuid
+    try:
+        uuid = payload.uuid
+        
+        # Get current memory stats before clearing
+        from memory.session_memory import get_session_memory_size, get_all_session_memory
+        from memory.persistent_memory import get_summary, clear_summary
+        
+        session_size = get_session_memory_size(uuid)
+        session_messages = len(get_all_session_memory(uuid))
+        persistent_summary = get_summary(uuid)
+        persistent_size = len(persistent_summary) if persistent_summary else 0
+        
+        # Clear both session and persistent memory
+        from memory.session_memory import clear_session_memory
+        clear_session_memory(uuid)
+        clear_summary(uuid)
+        
+        print(f"🗑️ Cleared all memory for {uuid}: {session_messages} messages, {session_size + persistent_size} total chars")
+        
+        return {
+            "success": True,
+            "cleared": {
+                "session_messages": session_messages,
+                "session_chars": session_size,
+                "persistent_chars": persistent_size,
+                "total_chars": session_size + persistent_size
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ Exception occurred during memory clear:")
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -195,3 +232,93 @@ async def debug_config():
         "realtime_model": runtime_config.get("REALTIME_MODEL"),
         "realtime_voice": runtime_config.get("REALTIME_VOICE")
     }
+
+@app.get("/debug/session-data/{uuid}")
+async def debug_session_data(uuid: str):
+    """Debug session data retrieval"""
+    try:
+        from memory.session_memory import get_all_session_memory
+        from memory.persistent_memory import get_summary
+        
+        conversation = get_all_session_memory(uuid)
+        summary = get_summary(uuid)
+        
+        return {
+            "uuid": uuid,
+            "conversation_count": len(conversation) if conversation else 0,
+            "conversation_preview": conversation[:2] if conversation else [],
+            "summary_length": len(summary) if summary else 0,
+            "summary_preview": summary[:200] if summary else "No summary"
+        }
+    except Exception as e:
+        return {"error": str(e), "uuid": uuid}
+    
+@app.get("/debug/prompt-storage/{uuid}")
+async def debug_prompt_storage_endpoint(uuid: str):
+    """Debug prompt storage for a specific session UUID"""
+    try:
+        from memory.session_memory import debug_prompt_storage
+        result = debug_prompt_storage(uuid)
+        return {
+            "uuid": uuid,
+            "debug_result": result,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+    except Exception as e:
+        return {
+            "uuid": uuid,
+            "error": str(e),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+@app.get("/debug/conversation-data/{uuid}")
+async def debug_conversation_data_endpoint(uuid: str):
+    """Debug conversation data retrieval for Bug #2"""
+    try:
+        from memory.session_memory import get_all_session_memory
+        from memory.db import get_connection, execute_db_operation
+        
+        # Get current session memory
+        current_session = get_all_session_memory(uuid)
+        
+        # Get historical interaction logs
+        def _get_historical():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT user_message, assistant_response, created_at, interaction_id
+                        FROM interaction_logs
+                        WHERE uuid = %s
+                        ORDER BY created_at DESC
+                        LIMIT 5
+                    """, (uuid,))
+                    
+                    return [
+                        {
+                            "user_message": row[0][:100] + "..." if row[0] and len(row[0]) > 100 else row[0],
+                            "assistant_response": row[1][:100] + "..." if row[1] and len(row[1]) > 100 else row[1],
+                            "created_at": row[2].isoformat() if row[2] else None,
+                            "interaction_id": row[3]
+                        }
+                        for row in cur.fetchall()
+                    ]
+        
+        historical_data = execute_db_operation(_get_historical) or []
+        
+        return {
+            "uuid": uuid,
+            "current_session_count": len(current_session),
+            "current_session_preview": current_session[:2] if current_session else [],
+            "historical_interactions_count": len(historical_data),
+            "historical_interactions_preview": historical_data,
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        import traceback
+        return {
+            "uuid": uuid,
+            "error": str(e),
+            "traceback": traceback.format_exc(),
+            "timestamp": datetime.datetime.now().isoformat()
+        }

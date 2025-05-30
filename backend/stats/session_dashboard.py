@@ -1,4 +1,4 @@
-# session_dashboard.py
+# session_dashboard.py 
 import os
 import json
 import datetime
@@ -12,9 +12,7 @@ from pydantic import BaseModel
 import runtime_config
 from config import LOG_DIR
 
-
 router = APIRouter()
-
 
 # Token pricing (you can make these configurable later)
 TOKEN_PRICING = {
@@ -24,9 +22,401 @@ TOKEN_PRICING = {
     "gpt-4o-realtime-preview-2024-12-17": {"input": 0.005, "output": 0.02}  # Realtime pricing
 }
 
+def get_comprehensive_conversation_data(uuid: str) -> List[Dict[str, Any]]:
+    """
+    BUG #2 FIX: Get conversation data from BOTH current session memory AND historical interaction logs
+    This ensures we show conversation even after summarization has cleared session memory
+    """
+    all_messages = []
+    
+    try:
+        # STEP 1: Get current session memory (if any)
+        current_session = get_all_session_memory(uuid)
+        print(f"🔍 Current session messages: {len(current_session)}")
+        
+        # Add current session messages
+        for msg in current_session:
+            all_messages.append({
+                "role": msg["role"],
+                "message": msg["message"],
+                "created_at": msg["created_at"].isoformat() if hasattr(msg["created_at"], 'isoformat') else str(msg["created_at"]),
+                "source": "current_session"
+            })
+        
+        # STEP 2: Get historical interaction logs (the missing piece!)
+        def _get_historical_interactions():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT user_message, assistant_response, created_at, interaction_id
+                        FROM interaction_logs
+                        WHERE uuid = %s
+                        ORDER BY created_at ASC
+                    """, (uuid,))
+                    
+                    historical_pairs = []
+                    for row in cur.fetchall():
+                        user_msg, assistant_msg, created_at, interaction_id = row
+                        
+                        # Add user message
+                        if user_msg:
+                            historical_pairs.append({
+                                "role": "user",
+                                "message": user_msg,
+                                "created_at": created_at.isoformat() if created_at else "",
+                                "source": "historical_logs",
+                                "interaction_id": interaction_id
+                            })
+                        
+                        # Add assistant message
+                        if assistant_msg:
+                            historical_pairs.append({
+                                "role": "assistant", 
+                                "message": assistant_msg,
+                                "created_at": created_at.isoformat() if created_at else "",
+                                "source": "historical_logs",
+                                "interaction_id": interaction_id
+                            })
+                    
+                    return historical_pairs
+        
+        historical_messages = execute_db_operation(_get_historical_interactions) or []
+        print(f"🔍 Historical messages: {len(historical_messages)}")
+        
+        # Combine and sort by timestamp
+        all_messages.extend(historical_messages)
+        
+        # Sort by created_at timestamp
+        all_messages.sort(key=lambda x: x.get("created_at", ""))
+
+        enhanced_messages = []
+        conversation_context = []
+
+        for i, msg in enumerate(all_messages):
+            enhanced_msg = dict(msg)  # Copy the message
+    
+            if msg["role"] == "assistant":
+                # Reconstruct the final prompt for this specific response
+                try:
+                    # Get base system prompt and session context from most recent session prompt
+                    prompt_data = get_comprehensive_final_prompt_fixed(uuid) if uuid else {}
+                    base_system_prompt = prompt_data.get("system_prompt", "")
+                    persistent_summary = prompt_data.get("persistent_summary", "")
+            
+                    # Build conversation context up to this point
+                    context_messages = []
+                    for prev_msg in conversation_context:
+                        role = prev_msg["role"].title()
+                        message = prev_msg["message"]
+                        context_messages.append(f"{role}: {message}")
+            
+                    conversation_text = "\n\n".join(context_messages) if context_messages else "No previous conversation"
+            
+                    # Reconstruct final prompt
+                    context_parts = []
+                    if persistent_summary:
+                        context_parts.append(f"User Background:\n{persistent_summary}")
+                    if conversation_text:
+                        context_parts.append(f"Recent Conversation:\n{conversation_text}")
+            
+                    if context_parts:
+                        final_prompt = base_system_prompt + f"\n\nContext about this user:\n\n{chr(10).join(context_parts)}"
+                    else:
+                        final_prompt = base_system_prompt
+            
+                    # Add prompt data to the message
+                    enhanced_msg["final_prompt"] = final_prompt
+                    enhanced_msg["final_prompt_length"] = len(final_prompt)
+                    enhanced_msg["estimated_tokens"] = len(final_prompt) // 4
+                    enhanced_msg["strategy"] = prompt_data.get("strategy", "auto")
+                    enhanced_msg["model"] = prompt_data.get("model", "unknown")
+            
+                except Exception as e:
+                    print(f"⚠️ Error reconstructing prompt for message {i}: {e}")
+                    enhanced_msg["final_prompt"] = "Error reconstructing prompt"
+                    enhanced_msg["final_prompt_length"] = 0
+                    enhanced_msg["estimated_tokens"] = 0
+    
+            enhanced_messages.append(enhanced_msg)
+            conversation_context.append(msg)  # Add to context for next iteration
+        
+        print(f"✅ Total conversation messages retrieved: {len(enhanced_messages)}")
+        return enhanced_messages
+        
+    except Exception as e:
+        print(f"❌ Error getting comprehensive conversation: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def get_comprehensive_final_prompt_fixed(uuid: str) -> Dict[str, Any]:
+    """
+    BUG #2 FIX: Enhanced prompt retrieval with better error handling and data validation
+    """
+    try:
+        def _get_latest_prompt():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Check if session_prompts table exists and has data
+                    cur.execute("""
+                        SELECT COUNT(*) FROM session_prompts WHERE uuid = %s
+                    """, (uuid,))
+                    
+                    count = cur.fetchone()[0]
+                    print(f"🔍 Found {count} prompt records for {uuid}")
+                    
+                    if count == 0:
+                        return None
+                    
+                    # Get the latest prompt
+                    cur.execute("""
+                        SELECT 
+                            system_prompt, persistent_summary, session_context,
+                            final_prompt, prompt_length, estimated_tokens,
+                            strategy, model, created_at
+                        FROM session_prompts
+                        WHERE uuid = %s
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                    """, (uuid,))
+                    
+                    row = cur.fetchone()
+                    if row:
+                        (system_prompt, persistent_summary, session_context, 
+                         final_prompt, prompt_length, estimated_tokens,
+                         strategy, model, created_at) = row
+                        
+                        return {
+                            "final_prompt": final_prompt or "No final prompt content",
+                            "source": "DATABASE_RETRIEVED",
+                            "system_prompt": system_prompt or "",
+                            "persistent_summary": persistent_summary or "",
+                            "session_context": session_context or "",
+                            "prompt_length": prompt_length or 0,
+                            "estimated_tokens": estimated_tokens or 0,
+                            "strategy": strategy or "auto",
+                            "model": model or "unknown",
+                            "timestamp": created_at.isoformat() if created_at else ""
+                        }
+                    return None
+        
+        db_result = execute_db_operation(_get_latest_prompt)
+        
+        if db_result:
+            print(f"✅ Retrieved prompt data: {db_result['prompt_length']} chars, strategy: {db_result['strategy']}")
+            return db_result
+        else:
+            print(f"⚠️ No prompt data found in database for {uuid}")
+            
+    except Exception as e:
+        print(f"❌ Error getting comprehensive prompt for {uuid}: {e}")
+        import traceback
+        traceback.print_exc()
+    
+    # Fallback: Try to get from recent logs file
+    try:
+        prompts_log = os.path.join(LOG_DIR, "actual_prompts.jsonl")
+        if os.path.exists(prompts_log):
+            print(f"🔍 Checking prompts log file for {uuid}")
+            with open(prompts_log, "r") as f:
+                for line in reversed(f.readlines()):
+                    try:
+                        entry = json.loads(line)
+                        if entry.get("user_uuid") == uuid:
+                            print(f"✅ Found prompt in log file: {len(entry.get('final_prompt', ''))} chars")
+                            return {
+                                "final_prompt": entry.get("final_prompt", ""),
+                                "source": "LOGFILE_FALLBACK",
+                                "prompt_length": entry.get("prompt_length", 0),
+                                "estimated_tokens": entry.get("estimated_tokens", 0),
+                                "strategy": entry.get("strategy", "auto"),
+                                "model": entry.get("model", "unknown"),
+                                "timestamp": entry.get("timestamp", "")
+                            }
+                    except:
+                        continue
+    except Exception as e:
+        print(f"⚠️ Error checking log file: {e}")
+    
+    return {
+        "final_prompt": "No prompt data available for this session",
+        "source": "NOT_AVAILABLE",
+        "system_prompt": "",
+        "persistent_summary": "",
+        "session_context": "",
+        "prompt_length": 0,
+        "estimated_tokens": 0,
+        "strategy": "auto",
+        "model": "unknown",
+        "timestamp": ""
+    }
+
+def get_session_historical_stats(uuid: str) -> Dict[str, Any]:
+    """Get comprehensive historical session statistics from database"""
+    try:
+        def _get_historical_stats():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get total messages from session_memory AND interaction_logs
+                    cur.execute("""
+                        SELECT 
+                            -- Current session memory
+                            (SELECT COUNT(*) FROM session_memory WHERE uuid = %s) as current_messages,
+                            (SELECT COUNT(CASE WHEN role = 'user' THEN 1 END) FROM session_memory WHERE uuid = %s) as current_user_messages,
+                            (SELECT COUNT(CASE WHEN role = 'assistant' THEN 1 END) FROM session_memory WHERE uuid = %s) as current_assistant_messages,
+                            
+                            -- Historical interaction logs
+                            (SELECT COUNT(*) FROM interaction_logs WHERE uuid = %s) as historical_interactions,
+                            
+                            -- Session timing
+                            (SELECT MIN(created_at) FROM session_memory WHERE uuid = %s) as first_current_message,
+                            (SELECT MAX(created_at) FROM session_memory WHERE uuid = %s) as last_current_message,
+                            (SELECT MIN(created_at) FROM interaction_logs WHERE uuid = %s) as first_historical_message,
+                            (SELECT MAX(created_at) FROM interaction_logs WHERE uuid = %s) as last_historical_message
+                    """, (uuid, uuid, uuid, uuid, uuid, uuid, uuid, uuid))
+                    
+                    row = cur.fetchone()
+                    if not row:
+                        return {}
+                    
+                    (current_messages, current_user_messages, current_assistant_messages, 
+                     historical_interactions, first_current, last_current, 
+                     first_historical, last_historical) = row
+                    
+                    # Calculate totals
+                    total_messages = (current_messages or 0) + (historical_interactions or 0) * 2  # Each interaction = user + assistant
+                    total_user_messages = (current_user_messages or 0) + (historical_interactions or 0)
+                    total_assistant_messages = (current_assistant_messages or 0) + (historical_interactions or 0)
+                    
+                    # Calculate session duration
+                    first_message = min(filter(None, [first_current, first_historical]), default=None)
+                    last_message = max(filter(None, [last_current, last_historical]), default=None)
+                    
+                    duration = 0
+                    if first_message and last_message:
+                        duration = (last_message - first_message).total_seconds() / 60
+                    
+                    return {
+                        "total_messages": total_messages,
+                        "user_messages": total_user_messages,
+                        "assistant_messages": total_assistant_messages,
+                        "historical_interactions": historical_interactions or 0,
+                        "current_messages": current_messages or 0,
+                        "first_message": first_message.isoformat() if first_message else None,
+                        "last_message": last_message.isoformat() if last_message else None,
+                        "session_duration": round(duration, 1),
+                        "avg_message_length": 0  # Calculate separately if needed
+                    }
+        
+        return execute_db_operation(_get_historical_stats)
+    except Exception as e:
+        print(f"Error getting historical stats for {uuid}: {e}")
+        return {}
+
+def calculate_session_cost_from_db(uuid: str) -> Dict[str, Any]:
+    """Calculate session cost from actual stored data"""
+    try:
+        def _get_cost_data():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Get all messages for this session (current + historical)
+                    cur.execute("""
+                        SELECT message FROM session_memory WHERE uuid = %s
+                        UNION ALL
+                        SELECT user_message FROM interaction_logs WHERE uuid = %s AND user_message IS NOT NULL
+                        UNION ALL  
+                        SELECT assistant_response FROM interaction_logs WHERE uuid = %s AND assistant_response IS NOT NULL
+                    """, (uuid, uuid, uuid))
+                    
+                    messages = cur.fetchall()
+                    return [row[0] for row in messages if row[0]]
+        
+        all_messages = execute_db_operation(_get_cost_data) or []
+        
+        # Calculate tokens and cost
+        total_input_tokens = 0
+        total_output_tokens = 0
+        
+        for i, message in enumerate(all_messages):
+            tokens = len(message) // 4  # Rough estimate
+            if i % 2 == 0:  # Assume even indices are user messages
+                total_input_tokens += tokens
+            else:  # Odd indices are assistant messages  
+                total_output_tokens += tokens
+        
+        # Use current realtime model pricing
+        realtime_model = runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
+        pricing = TOKEN_PRICING.get(realtime_model, {"input": 0.005, "output": 0.020})
+        
+        input_cost = (total_input_tokens / 1000) * pricing["input"]
+        output_cost = (total_output_tokens / 1000) * pricing["output"]
+        total_cost = input_cost + output_cost
+        
+        return {
+            "input_tokens": total_input_tokens,
+            "output_tokens": total_output_tokens,
+            "total_tokens": total_input_tokens + total_output_tokens,
+            "input_cost": input_cost,
+            "output_cost": output_cost,
+            "total_cost": total_cost,
+            "model_used": realtime_model
+        }
+        
+    except Exception as e:
+        print(f"Error calculating cost for {uuid}: {e}")
+        return {
+            "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+            "input_cost": 0.0, "output_cost": 0.0, "total_cost": 0.0,
+            "model_used": "unknown"
+        }
+
 def get_recent_summarization_events(uuid: str) -> list:
-    """Get recent summarization events for dashboard"""
+    """Get recent summarization events for dashboard - DATABASE FIRST, file fallback"""
     events = []
+    
+    # TRY DATABASE FIRST
+    try:
+        def _get_from_db():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT event_type, created_at, trigger_reason, conversation_length,
+                               summary_generated, chars_before, chars_after
+                        FROM summarization_events
+                        WHERE uuid = %s
+                        ORDER BY created_at DESC
+                        LIMIT 10
+                    """, (uuid,))
+                    
+                    db_events = []
+                    for row in cur.fetchall():
+                        event_type, created_at, trigger_reason, conv_len, summary, chars_before, chars_after = row
+                        
+                        event = {
+                            "event_type": event_type,
+                            "timestamp": created_at.isoformat() if created_at else "",
+                            "user_uuid": uuid,
+                            "details": {
+                                "conversation_length": conv_len or 0,
+                                "summary": summary or "",
+                                "chars_before": chars_before or 0,
+                                "chars_after": chars_after or 0,
+                                "trigger_reason": trigger_reason or event_type
+                            }
+                        }
+                        db_events.append(event)
+                    
+                    return db_events
+        
+        events = execute_db_operation(_get_from_db)
+        if events:
+            print(f"✅ Got {len(events)} summarization events from DATABASE for {uuid}")
+            return events
+            
+    except Exception as e:
+        print(f"⚠️ Database read failed for summarization events: {e}")
+    
+    # FALLBACK TO FILE (original code)
     try:
         summarization_log = os.path.join(LOG_DIR, os.getenv("MOBEUS_SUMMARIZATION_LOG", "summarization_events.jsonl"))
         if os.path.exists(summarization_log):
@@ -38,76 +428,177 @@ def get_recent_summarization_events(uuid: str) -> list:
                             events.append(event)
                     except:
                         continue
+            print(f"📁 Got {len(events)} summarization events from FILE for {uuid}")
     except:
         pass
-    return events[-5:]  # Last 5 events
+    
+    return events[-10:]  # Last 10 events
 
 def get_active_sessions(limit: int = 100):
-    """
-    Get active user sessions from the database.
-    Active sessions are those with interactions in the last 24 hours.
-    """
+    """Get ALL user sessions with proper historical data integration"""
     try:
         def _impl():
             with get_connection() as conn:
                 with conn.cursor() as cur:
+                    # Get ALL sessions with proper historical data
                     cur.execute("""
+                        WITH session_stats AS (
+                            SELECT 
+                                uuid,
+                                MAX(created_at) as last_interaction,
+                                COUNT(*) as current_messages,
+                                MIN(created_at) as first_interaction
+                            FROM session_memory
+                            GROUP BY uuid
+                        ),
+                        historical_stats AS (
+                            SELECT 
+                                uuid,
+                                MAX(created_at) as last_historical_interaction,
+                                COUNT(*) as historical_interactions
+                            FROM interaction_logs
+                            GROUP BY uuid  
+                        ),
+                        persistent_sessions AS (
+                            SELECT DISTINCT uuid, updated_at
+                            FROM persistent_memory
+                            WHERE uuid NOT IN (SELECT uuid FROM session_stats)
+                        )
+                        
                         SELECT 
-                            uuid, 
-                            MAX(created_at) as last_interaction,
-                            COUNT(*) as message_count
-                        FROM session_memory
-                        GROUP BY uuid
+                            COALESCE(s.uuid, h.uuid, p.uuid) as uuid,
+                            GREATEST(
+                                COALESCE(s.last_interaction, '1970-01-01'::timestamp),
+                                COALESCE(h.last_historical_interaction, '1970-01-01'::timestamp),
+                                COALESCE(p.updated_at, '1970-01-01'::timestamp)
+                            ) as last_interaction,
+                            COALESCE(s.current_messages, 0) as current_messages,
+                            COALESCE(h.historical_interactions, 0) as historical_interactions,
+                            s.first_interaction
+                        FROM session_stats s
+                        FULL OUTER JOIN historical_stats h ON s.uuid = h.uuid
+                        FULL OUTER JOIN persistent_sessions p ON COALESCE(s.uuid, h.uuid) = p.uuid
                         ORDER BY last_interaction DESC
                         LIMIT %s
                     """, (limit,))
                     
                     sessions = []
                     for row in cur.fetchall():
-                        uuid, last_interaction, message_count = row
+                        uuid, last_interaction, current_messages, historical_interactions, first_interaction = row
                         
-                        # Get additional stats
-                        cur.execute("""
-                            SELECT
-                                COUNT(CASE WHEN role = 'user' THEN 1 END) as user_messages,
-                                COUNT(CASE WHEN role = 'assistant' THEN 1 END) as assistant_messages
-                            FROM session_memory
-                            WHERE uuid = %s
-                        """, (uuid,))
+                        # Calculate total messages 
+                        total_messages = (current_messages or 0) + (historical_interactions or 0) * 2
                         
-                        message_stats = cur.fetchone()
-                        if message_stats:
-                            user_messages, assistant_messages = message_stats
-                        else:
-                            user_messages, assistant_messages = 0, 0
-                        
-                        # Get session summary if available
+                        # Get session summary
                         summary = get_summary(uuid) or ""
+                        
+                        # Calculate cost using our improved function
+                        cost_data = calculate_session_cost_from_db(uuid)
+                        
+                        # Determine status
+                        status = "active" if current_messages > 0 else "summarized"
                         
                         sessions.append({
                             "uuid": uuid,
                             "last_interaction": last_interaction.isoformat() if last_interaction else None,
-                            "message_count": message_count,
-                            "user_messages": user_messages,
-                            "assistant_messages": assistant_messages,
-                            "summary": summary[:100] + "..." if len(summary) > 100 else summary
+                            "message_count": total_messages,
+                            "user_messages": total_messages // 2,  # Approximate
+                            "assistant_messages": total_messages // 2,  # Approximate
+                            "summary": summary[:100] + "..." if len(summary) > 100 else summary,
+                            "status": status,
+                            "cost_estimate": cost_data.get("total_cost", 0.0),
+                            "current_messages": current_messages or 0,
+                            "historical_interactions": historical_interactions or 0
                         })
                     
                     return sessions
         
         return execute_db_operation(_impl)
     except Exception as e:
-        print(f"Error getting active sessions: {e}")
+        print(f"Error getting sessions: {e}")
+        import traceback
+        traceback.print_exc()
         return []
+
+def get_session_deep_dive(uuid: str):
+    """
+    BUG #2 FIXED: Get comprehensive session analysis with FIXED conversation and prompt retrieval
+    """
+    try:
+        # BUG #2 FIX: Use the new comprehensive conversation function
+        conversation = get_comprehensive_conversation_data(uuid)
+        print(f"🔍 Deep dive conversation data: {len(conversation)} messages")
+        
+        summary = get_summary(uuid)
+        memory_stats = get_memory_stats(uuid)
+        
+        # FIXED: Ensure these functions return dicts, not None/strings
+        stats = get_session_historical_stats(uuid)
+        if not isinstance(stats, dict):
+            stats = {}
+        
+        cost_analysis = calculate_session_cost_from_db(uuid)
+        if not isinstance(cost_analysis, dict):
+            cost_analysis = {}
+        
+        # Get current config
+        current_config = {
+            "system_prompt": runtime_config.get("SYSTEM_PROMPT", ""),
+            "tone_style": runtime_config.get("TONE_STYLE", "empathetic"),
+            "temperature": runtime_config.get("TEMPERATURE", 0.7),
+            "model": runtime_config.get("GPT_MODEL", "gpt-4"),
+            "realtime_model": runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17"),
+            "session_memory_limit": runtime_config.get("SESSION_MEMORY_CHAR_LIMIT", 15000),
+            "rag_enabled": runtime_config.get("RAG_ENABLED", True)
+        }
+        
+        # BUG #2 FIX: Use the fixed prompt retrieval function
+        prompt_construction = get_comprehensive_final_prompt_fixed(uuid)
+        if not isinstance(prompt_construction, dict):
+            prompt_construction = {"final_prompt": "No prompt data available", "source": "NOT_AVAILABLE"}
+        
+        # Get summarization events
+        summarization_events = get_recent_summarization_events(uuid)
+        if not isinstance(summarization_events, list):
+            summarization_events = []
+        
+        # Memory transitions analysis (simplified)
+        memory_transitions = []
+        if len(summarization_events) > 0:
+            for i, event in enumerate(summarization_events):
+                if isinstance(event, dict):
+                    memory_transitions.append({
+                        "cycle_number": i + 1,
+                        "trigger": event.get("details", {}).get("trigger_reason", "auto"),
+                        "timestamp": event.get("timestamp", ""),
+                        "chars_processed": event.get("details", {}).get("conversation_length", 0)
+                    })
+        
+        return {
+            "uuid": uuid,
+            "conversation": conversation,  # Now includes historical data!
+            "summary": summary,
+            "stats": stats,
+            "memory_stats": memory_stats,
+            "memory_transitions": memory_transitions,
+            "prompt_construction": prompt_construction,  # Now uses fixed retrieval!
+            "cost_analysis": cost_analysis,
+            "session_config": current_config,
+            "summarization_events": summarization_events
+        }
+        
+    except Exception as e:
+        print(f"❌ Error getting session deep dive: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"uuid": uuid, "error": str(e)}
 
 class SummaryUpdate(BaseModel):
     summary: str
 
 @router.post("/sessions/{uuid}/summary")
 async def update_session_summary(uuid: str, data: SummaryUpdate):
-    """
-    Update the session summary.
-    """
+    """Update the session summary."""
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     summary_with_timestamp = f"[{timestamp}] Manual Update: {data.summary}"
     
@@ -117,279 +608,19 @@ async def update_session_summary(uuid: str, data: SummaryUpdate):
     except Exception as e:
         return {"success": False, "error": str(e)}
 
-def estimate_tokens(text: str) -> int:
-    """Rough token estimation (1 token ≈ 4 characters for English)"""
-    return len(text) // 4
-
-def calculate_session_cost(session_data: dict) -> dict:
-    """Calculate estimated cost for a session"""
-    total_input_tokens = 0
-    total_output_tokens = 0
-    
-    # Get current model from runtime config
-    current_model = runtime_config.get("GPT_MODEL", "gpt-4")
-    realtime_model = runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
-    
-    # Estimate tokens from conversation
-    for interaction in session_data.get("conversation", []):
-        text = interaction.get("message", "")
-        tokens = estimate_tokens(text)
-        
-        if interaction.get("role") == "user":
-            total_input_tokens += tokens
-        else:  # assistant
-            total_output_tokens += tokens
-    
-    # Use realtime model pricing (since most sessions are realtime)
-    pricing = TOKEN_PRICING.get(realtime_model, TOKEN_PRICING["gpt-4o"])
-    
-    input_cost = (total_input_tokens / 1000) * pricing["input"]
-    output_cost = (total_output_tokens / 1000) * pricing["output"]
-    total_cost = input_cost + output_cost
-    
-    return {
-        "input_tokens": total_input_tokens,
-        "output_tokens": total_output_tokens,
-        "total_tokens": total_input_tokens + total_output_tokens,
-        "input_cost": input_cost,
-        "output_cost": output_cost,
-        "total_cost": total_cost,
-        "model_used": realtime_model
-    }
-
-def get_session_deep_dive(uuid: str):
-    """Get comprehensive session analysis with memory system details"""
-    try:
-        # Get basic session data
-        conversation = get_all_session_memory(uuid)  # Get more for analysis
-        print(f"🔍 DEBUG: Conversation count = {len(conversation)}")
-        summary = get_summary(uuid)
-        print(f"🔍 DEBUG: Summary = {summary}")
-        memory_stats = get_memory_stats(uuid)
-        print(f"🔍 DEBUG: Memory stats = {memory_stats}")
-        actual_char_count = sum(len(interaction.get("message", "")) for interaction in conversation)
-        print(f"🔍 DEBUG: Actual char count from conversation = {actual_char_count}")
-        
-        # Get session configuration snapshot
-        current_config = {
-            "system_prompt": runtime_config.get("SYSTEM_PROMPT", ""),
-            "tone_style": runtime_config.get("TONE_STYLE", "empathetic"),
-            "temperature": runtime_config.get("TEMPERATURE", 0.7),
-            "model": runtime_config.get("GPT_MODEL", "gpt-4"),
-            "realtime_model": runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17"),
-            "session_memory_limit": runtime_config.get("SESSION_MEMORY_CHAR_LIMIT", 15000)
-        }
-        
-        # Analyze memory transitions
-        memory_transitions = analyze_memory_transitions(conversation, memory_stats)
-        
-        # Calculate costs
-        cost_analysis = calculate_session_cost({"conversation": conversation})
-             
-        # Get session stats with enhanced data
-        def _get_enhanced_stats():
-            with get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute("""
-                        SELECT 
-                            COUNT(*) as total_messages,
-                            MIN(created_at) as first_message,
-                            MAX(created_at) as last_message,
-                            COUNT(CASE WHEN role = 'user' THEN 1 END) as user_messages,
-                            COUNT(CASE WHEN role = 'assistant' THEN 1 END) as assistant_messages,
-                            AVG(LENGTH(message)) as avg_message_length
-                        FROM session_memory
-                        WHERE uuid = %s
-                    """, (uuid,))
-                    
-                    row = cur.fetchone()
-                    if not row:
-                        return {}
-                    
-                    total, first, last, user, assistant, avg_length = row
-                    duration = (last - first).total_seconds() / 60 if first and last else 0
-                    
-                    return {
-                        "total_messages": total,
-                        "first_message": first.isoformat() if first else None,
-                        "last_message": last.isoformat() if last else None,
-                        "user_messages": user,
-                        "assistant_messages": assistant,
-                        "session_duration": round(duration, 1),
-                        "avg_message_length": round(avg_length, 1) if avg_length else 0
-                    }
-        
-        stats = execute_db_operation(_get_enhanced_stats)
-        session_start = stats.get("first_message") if isinstance(stats, dict) else None
-        session_end = stats.get("last_message") if isinstance(stats, dict) else None
-        # Build sample prompt construction
-        prompt_construction = build_prompt_construction_example(uuid, current_config, session_start, session_end)
-        summarization_events = get_recent_summarization_events(uuid)
-        
-        return {
-            "uuid": uuid,
-            "conversation": conversation,
-            "summary": summary,
-            "stats": stats,
-            "memory_stats": memory_stats,
-            "memory_transitions": memory_transitions,
-            "prompt_construction": prompt_construction,
-            "cost_analysis": cost_analysis,
-            "session_config": current_config,
-            "summarization_events": summarization_events
-        }
-        
-    except Exception as e:
-        print(f"Error getting session deep dive: {e}")
-        return {"uuid": uuid, "error": str(e)}
-
-def analyze_memory_transitions(conversation: list, memory_stats: dict) -> list:
-    """Analyze memory transitions by detecting character count resets and persistent memory growth"""
-    transitions = []
-    
-    # Get current state
-    current_chars = memory_stats.get('session_memory_chars', 0)
-    current_persistent_chars = memory_stats.get('persistent_memory_chars', 0)
-    limit = memory_stats.get('session_memory_limit', 15000)
-    
-    # Calculate total conversation characters
-    total_conversation_chars = sum(len(interaction.get("message", "")) for interaction in conversation if isinstance(interaction, dict))
-    
-    # Detection logic: If we have substantial conversation but low session memory,
-    # AND we have persistent memory, it indicates summarization occurred
-    if (total_conversation_chars > limit * 1.5 and  # We've had more than 1.5x the limit worth of conversation
-        current_chars < limit * 0.8 and             # But current session memory is less than 80% of limit
-        current_persistent_chars > 50):             # And we have substantial persistent memory
-        
-        # Estimate how many cycles based on total conversation vs current session memory
-        estimated_cycles = max(1, int((total_conversation_chars - current_chars) / limit))
-        
-        for cycle in range(estimated_cycles):
-            transitions.append({
-                "cycle_number": cycle + 1,
-                "trigger": "Memory reset detected (estimated)",
-                "estimated_chars_before_reset": limit,
-                "method": "Character pattern analysis"
-            })
-    
-    return transitions
-    
-    return transitions
-
-def build_prompt_construction_example(uuid: str, config: dict, session_start: Optional[str] = None, session_end: Optional[str] = None) -> dict:
-    """Get the ACTUAL prompt that was sent to OpenAI for this specific session"""
-    
-    # Try to get prompt from the specific session timeframe
-    actual_prompt = get_latest_actual_prompt(uuid, session_start, session_end)
-    
-    if actual_prompt:
-        return {
-            "system_prompt": config.get("system_prompt", ""),
-            "system_prompt_length": len(config.get("system_prompt", "")),
-            "persistent_summary": get_summary(uuid),
-            "persistent_summary_length": len(get_summary(uuid) or ""),
-            "final_prompt": actual_prompt["final_prompt"],
-            "final_prompt_length": actual_prompt["prompt_length"],
-            "estimated_tokens": actual_prompt["estimated_tokens"],
-            "source": "ACTUAL PROMPT FROM THIS SESSION",
-            "timestamp": actual_prompt["timestamp"]
-        }
-    else:
-        return {"final_prompt": "No prompt logged for this session", "source": "NOT AVAILABLE"}
-
-def get_latest_actual_prompt(user_uuid: str, session_start: Optional[str] = None, session_end: Optional[str] = None) -> dict:
-    """Get the actual prompt for a specific session timeframe"""
-    try:
-        prompts_log = os.path.join(LOG_DIR, os.getenv("MOBEUS_ACTUAL_PROMPTS_LOG", "actual_prompts.jsonl"))
-        print(f"🔍 Looking for prompts in: {prompts_log}")
-        
-        if not os.path.exists(prompts_log):
-            print(f"❌ Prompts log not found: {prompts_log}")
-            return {}
-            
-        with open(prompts_log, "r") as f:
-            lines = f.readlines()
-        
-        print(f"📝 Found {len(lines)} total prompt entries")
-        
-        # Find ALL prompts for this user first
-        user_prompts = []
-        for line in reversed(lines):  # Start from most recent
-            try:
-                entry = json.loads(line)
-                if entry.get("user_uuid") == user_uuid:
-                    user_prompts.append(entry)
-            except Exception as e:
-                print(f"⚠️ Error parsing line: {e}")
-                continue
-        
-        print(f"🎯 Found {len(user_prompts)} prompts for user {user_uuid}")
-        
-        if not user_prompts:
-            print(f"❌ No prompts found for user {user_uuid}")
-            return {}
-        
-        # If we have session bounds, try to find prompt within timeframe
-        if session_start and session_end:
-            print(f"🕐 Filtering by session timeframe: {session_start} to {session_end}")
-            
-            try:
-                # Be more generous with time parsing and buffering
-                session_start_dt = datetime.datetime.fromisoformat(session_start.replace('Z', '+00:00').replace('T', ' ').split('+')[0])
-                session_end_dt = datetime.datetime.fromisoformat(session_end.replace('Z', '+00:00').replace('T', ' ').split('+')[0])
-                
-                # Add generous buffers (30 minutes before and after)
-                session_start_dt = session_start_dt - datetime.timedelta(minutes=30)
-                session_end_dt = session_end_dt + datetime.timedelta(minutes=30)
-                
-                print(f"🕐 Expanded search window: {session_start_dt} to {session_end_dt}")
-                
-                for entry in user_prompts:
-                    timestamp_str = entry.get("timestamp", "")
-                    try:
-                        if timestamp_str:
-                            # Handle different timestamp formats more robustly
-                            prompt_time = datetime.datetime.fromisoformat(timestamp_str.replace('Z', '+00:00').replace('T', ' ').split('+')[0])
-                            
-                            print(f"🔍 Checking prompt time: {prompt_time}")
-                            
-                            if session_start_dt <= prompt_time <= session_end_dt:
-                                print(f"✅ Found prompt within session timeframe!")
-                                return entry
-                    except Exception as e:
-                        print(f"⚠️ Error parsing timestamp '{timestamp_str}': {e}")
-                        continue
-                
-                print(f"⚠️ No prompt found in session timeframe, using most recent")
-                
-            except Exception as e:
-                print(f"⚠️ Error with session timeframe logic: {e}")
-        
-        # Always fall back to most recent prompt for this user
-        print(f"✅ Returning most recent prompt for user")
-        return user_prompts[0]
-                    
-    except Exception as e:
-        print(f"❌ Error reading prompts log: {e}")
-        import traceback
-        traceback.print_exc()
-    
-    return {}
-
 @router.get("/sessions/{uuid}/deep-dive", response_class=HTMLResponse)
 async def session_deep_dive(
     request: Request,
     uuid: str = Path(..., description="Session UUID")
 ):
-    """Enhanced session view with complete memory system visibility"""
-    # DEBUG: This should ALWAYS print if function is called
-    print(f"🚨 FUNCTION CALLED: session_deep_dive with UUID: {uuid}")
-    print(f"🚨 REQUEST PATH: {request.url}")
+    """Enhanced session view with BUG #2 FIXED - Conversation & Prompt Retrieval"""
+    print(f"🔍 Deep dive requested for UUID: {uuid}")
     
-    session = get_session_deep_dive(uuid)
-    session_json = json.dumps(session, default=str)  # Handle datetime serialization
+    session: Dict[str, Any] = get_session_deep_dive(uuid)
+    session = session if isinstance(session, dict) else {}
+    session_json = json.dumps(session, default=str)
     
-    # Safely extract all values to avoid .get() errors in HTML
+    # Safely extract values with improved error handling
     stats = session.get('stats', {})
     cost_analysis = session.get('cost_analysis', {})
     memory_stats = session.get('memory_stats', {})
@@ -400,44 +631,7 @@ async def session_deep_dive(
     summary = session.get('summary', '')
     summarization_events = session.get('summarization_events', [])
 
-    summarization_events_html = ""
-    if isinstance(summarization_events, list):
-        for event in summarization_events:
-            if isinstance(event, dict):
-                # Safely extract values
-                event_type = event.get("event_type", "unknown").replace("_", " ").title()
-                timestamp = event.get("timestamp", "")
-                details = event.get("details", {})
-            
-                # Safely get conversation length
-                if isinstance(details, dict):
-                    conversation_length = details.get("conversation_length", "Unknown")
-                else:
-                    conversation_length = "Unknown"
-            
-                summarization_events_html += f'''
-                <div class="memory-stage">
-                    <div class="memory-stage-title">{event_type}</div>
-                    <div>Time: {timestamp}</div>
-                    <div>Processed: {conversation_length} chars</div>
-                </div>
-                '''
-    else:
-        summarization_events_html = '<div class="memory-stage"><div class="memory-stage-title">No Events</div></div>'
-    
-    # Ensure stats is a dict before accessing .get()
-    if not isinstance(stats, dict):
-        stats = {}
-    if not isinstance(cost_analysis, dict):
-        cost_analysis = {}
-    if not isinstance(memory_stats, dict):
-        memory_stats = {}
-    if not isinstance(session_config, dict):
-        session_config = {}
-    if not isinstance(prompt_construction, dict):
-        prompt_construction = {}
-
-    # Extract individual values
+    # FIXED: Extract values with proper defaults
     total_messages = stats.get('total_messages', 0)
     total_tokens = cost_analysis.get('total_tokens', 0)
     total_cost = cost_analysis.get('total_cost', 0)
@@ -445,75 +639,169 @@ async def session_deep_dive(
     current_chars = memory_stats.get('session_memory_chars', 0)
     memory_cycles = len(memory_transitions)
     
-    # Cost analysis values
+    # Extract cost analysis values
     input_tokens = cost_analysis.get('input_tokens', 0)
     output_tokens = cost_analysis.get('output_tokens', 0)
     input_cost = cost_analysis.get('input_cost', 0)
     output_cost = cost_analysis.get('output_cost', 0)
     model_used = cost_analysis.get('model_used', 'Unknown')
     
-    # Memory system values
-    total_interactions = len(conversation) 
+    # Memory values
     session_memory_limit = memory_stats.get('session_memory_limit', 15000)
     summary_length = len(summary) if summary else 0
     summary_status = 'Active' if summary else 'Empty'
     
-    # Prompt construction values
-    system_prompt = prompt_construction.get('system_prompt', '')
-    system_prompt_length = prompt_construction.get('system_prompt_length', 0)
-    persistent_summary = prompt_construction.get('persistent_summary', '') or 'No persistent memory'
-    persistent_summary_length = prompt_construction.get('persistent_summary_length', 0)
-    recent_session_length = prompt_construction.get('recent_session_length', 0)
-    context_parts = prompt_construction.get('context_parts', [])
-    final_prompt = prompt_construction.get('final_prompt', '')
-    estimated_tokens = prompt_construction.get('estimated_tokens', 0)
-    
-    # Generate conversation HTML
-    conversation_html = ""
-    for interaction in conversation[-10:]:  # Last 10 messages
-        if isinstance(interaction, dict):
-            role = interaction.get("role", "")
-            message = interaction.get("message", "")
-            created_at = interaction.get("created_at", "")
-        else:
-            role = ""
-            message = str(interaction)
-            created_at = ""
-        message_preview = message[:200] + ('...' if len(message) > 200 else '')
-        
-        conversation_html += f'''
-        <div class="message {role}">
-            <div class="message-header">
-                <span>{role.title()}</span>
-                <span>{created_at}</span>
+    # FIXED: Improved summarization events HTML with cleaner UI
+    summarization_events_html = ""
+    if summarization_events:
+        for i, event in enumerate(summarization_events):
+            event_type = event.get("event_type", "unknown").replace("_", " ").title()
+            timestamp = event.get("timestamp", "")
+            details = event.get("details", {})
+            
+            conversation_length = details.get("conversation_length", "Unknown")
+            actual_summary = details.get("summary", "No summary available")
+            trigger_reason = details.get("trigger_reason", event_type)
+            
+            # Truncate summary for display
+            summary_preview = actual_summary[:150] + "..." if len(actual_summary) > 150 else actual_summary
+            
+            summarization_events_html += f'''
+            <div class="summarization-event" style="margin-bottom: 1rem; border: 1px solid var(--border-color); border-radius: 0.5rem; overflow: hidden;">
+                <div class="event-header" style="background: var(--code-bg); padding: 0.75rem; border-bottom: 1px solid var(--border-color);">
+                    <div style="display: flex; justify-content: space-between; align-items: center;">
+                        <div>
+                            <strong style="color: var(--accent-color);">{trigger_reason}</strong>
+                            <span style="margin-left: 1rem; font-size: 0.875rem; opacity: 0.7;">{timestamp.split('T')[0] if 'T' in timestamp else timestamp}</span>
+                        </div>
+                        <button class="summary-analyze-btn" onclick="showSummaryDetails({i})" 
+                                style="background: var(--accent-color); color: var(--background-color); border: none; padding: 0.375rem 0.75rem; border-radius: 0.375rem; cursor: pointer; font-size: 0.75rem;">
+                            🔍 View Summary
+                        </button>
+                    </div>
+                    <div style="font-size: 0.8rem; margin-top: 0.5rem; opacity: 0.8;">
+                        Processed: {conversation_length} chars
+                    </div>
+                </div>
+                <div class="event-preview" style="padding: 0.75rem; font-size: 0.875rem; background: rgba(0,0,0,0.2);">
+                    {summary_preview}
+                </div>
+                <div id="summary-details-{i}" class="summary-details" style="display: none; padding: 1rem; background: var(--code-bg); border-top: 1px solid var(--border-color); max-height: 300px; overflow-y: auto;">
+                    <div style="font-family: 'Courier New', monospace; font-size: 0.875rem; line-height: 1.5; white-space: pre-wrap;">{actual_summary}</div>
+                </div>
             </div>
-            <div class="message-content">{message_preview}</div>
+            '''
+    else:
+        summarization_events_html = '''
+        <div class="summarization-event" style="padding: 1.5rem; text-align: center; opacity: 0.7; border: 1px dashed var(--border-color); border-radius: 0.5rem;">
+            <strong>No Summarization Events</strong><br>
+            <small>No summaries have been generated for this session yet.</small>
         </div>
         '''
     
-    # Generate context parts HTML
-    context_html = ""
-    for i, part in enumerate(context_parts):
-        # Truncate individual parts if they're too long
-        if len(part) > 5000:
-            truncated_part = part[:5000] + "..."
-        else:
-            truncated_part = part
-    
-        context_html += f"<div>{truncated_part}</div>"
-        if i < len(context_parts) - 1:
-            context_html += "<br><br>"
+    # BUG #2 FIXED: Generate conversation HTML with ACTUAL conversation data
+    conversation_html = ""
+    if conversation and len(conversation) > 0:
+        print(f"✅ Generating HTML for {len(conversation)} conversation messages")
+        
+        # Show last 20 messages for better performance
+        recent_conversation = conversation[-20:] if len(conversation) > 20 else conversation
+        
+        for i, interaction in enumerate(recent_conversation):
+            role = interaction.get("role", "unknown")
+            message = interaction.get("message", "")
+            created_at = interaction.get("created_at", "")
+            source = interaction.get("source", "unknown")
+            
+            message_preview = message[:400] + ('...' if len(message) > 400 else '')
+        
+            # Add source indicator
+            source_badge = f'<span style="background: {"#10b981" if source == "current_session" else "#f59e0b"}; color: white; padding: 0.25rem 0.5rem; border-radius: 0.25rem; font-size: 0.7rem; margin-left: 0.5rem;">{source.replace("_", " ").title()}</span>'
+            
+            # FIXED: Properly escape message for JavaScript
+            analyze_button = ""
+            if role == "assistant":
+                # Properly escape the message for JavaScript string literal
+                message_for_js = message[:500].replace('\\', '\\\\').replace("'", "\\'").replace('\n', '\\n').replace('\r', '\\r')
+                analyze_button = f'''
+                <div style="margin-top: 0.5rem;">
+                    <button class="analyze-btn" onclick="analyzeMessage({i}, '{message_for_js}')">
+                        🔍 Analyze Response
+                    </button>
+                </div>
+                '''
+        
+            conversation_html += f'''
+            <div class="message {role}" style="margin-bottom: 1rem; padding: 1rem; border-radius: 0.5rem; {'border-left: 4px solid var(--primary-color);' if role == 'user' else 'border-left: 4px solid var(--accent-color);'} background: {'rgba(37, 99, 235, 0.1)' if role == 'user' else 'rgba(6, 214, 160, 0.1)'};">
+                <div class="message-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; font-size: 0.875rem; opacity: 0.8;">
+                    <span style="font-weight: 600;">{role.title()}{source_badge}</span>
+                    <span>{created_at.split('T')[0] if 'T' in created_at else created_at}</span>
+                </div>
+                <div class="message-content" style="font-size: 0.9rem; line-height: 1.4;">{message_preview}</div>
+                {analyze_button}
+            </div>
+            '''
+    else:
+        conversation_html = '''
+        <div style="padding: 2rem; text-align: center; opacity: 0.7; border: 1px dashed var(--border-color); border-radius: 0.5rem;">
+            <strong>No Conversation Data Found</strong><br>
+            <small>No messages found in current session memory or historical interaction logs.</small>
+        </div>
+        '''
 
-    print(f"🚨 FINAL SESSION DATA KEYS: {list(session.keys())}")
-    print(f"🚨 SESSION STATS: {session.get('stats', 'NO STATS')}")
+    # BUG #2 FIXED: Add final prompt section with proper data
+    final_prompt_section = ""
+    final_prompt = prompt_construction.get("final_prompt", "")
     
+    if final_prompt and final_prompt != "No prompt data available for this session":
+        prompt_length = len(final_prompt)
+        estimated_tokens = prompt_construction.get("estimated_tokens", prompt_length // 4)
+        
+        final_prompt_section = f'''
+        <div class="card">
+            <div class="card-header">
+                <span class="card-icon">📜</span>
+                <span class="card-title">Final Prompt Sent to OpenAI </span>
+                <span style="font-size: 0.875rem; color: var(--accent-color);">
+                    {prompt_length:,} chars | ~{estimated_tokens:,} tokens | Source: {prompt_construction.get("source", "Unknown")}
+                </span>
+            </div>
+            <div class="card-body">
+                <div style="background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1rem; max-height: 400px; overflow-y: auto;">
+                    <pre style="margin: 0; font-family: 'Courier New', monospace; font-size: 0.8rem; line-height: 1.4; white-space: pre-wrap; color: var(--matrix-green);">{final_prompt}</pre>
+                </div>
+                <div style="margin-top: 1rem; padding: 0.75rem; background: rgba(6, 214, 160, 0.1); border: 1px solid var(--accent-color); border-radius: 0.375rem;">
+                    <strong style="color: var(--accent-color);">Strategy:</strong> {prompt_construction.get("strategy", "auto")} |
+                    <strong style="color: var(--accent-color);">Model:</strong> {prompt_construction.get("model", "unknown")} |
+                    <strong style="color: var(--accent-color);">Timestamp:</strong> {prompt_construction.get("timestamp", "Unknown")[:19] if prompt_construction.get("timestamp") else "Unknown"}
+                </div>
+            </div>
+        </div>
+        '''
+    else:
+        final_prompt_section = f'''
+        <div class="card">
+            <div class="card-header">
+                <span class="card-icon">⚠️</span>
+                <span class="card-title">Final Prompt (Not Available)</span>
+            </div>
+            <div class="card-body">
+                <div style="padding: 2rem; text-align: center; opacity: 0.7; border: 1px dashed var(--border-color); border-radius: 0.5rem;">
+                    <strong>No Prompt Data Available</strong><br>
+                    <small>Source: {prompt_construction.get("source", "Unknown")}</small><br>
+                    <small>This may indicate the session was created before prompt logging was implemented.</small>
+                </div>
+            </div>
+        </div>
+        '''
+
     html = f"""
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Mobeus Assistant — Session Deep Dive</title>
+        <title>Mobeus Assistant — Session Deep Dive </title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
         <style>
             :root {{
@@ -545,22 +833,7 @@ async def session_deep_dive(
                 min-height: 100vh;
             }}
             
-            .matrix-bg {{
-                position: fixed;
-                top: 0;
-                left: 0;
-                width: 100%;
-                height: 100%;
-                background: 
-                    radial-gradient(circle at 20% 80%, rgba(0, 255, 65, 0.1) 0%, transparent 50%),
-                    radial-gradient(circle at 80% 20%, rgba(37, 99, 235, 0.1) 0%, transparent 50%);
-                pointer-events: none;
-                z-index: 0;
-            }}
-            
             .container {{
-                position: relative;
-                z-index: 1;
                 max-width: 1400px;
                 margin: 0 auto;
                 padding: 1.5rem;
@@ -626,6 +899,7 @@ async def session_deep_dive(
                 border: 1px solid var(--border-color);
                 box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
                 transition: all 0.3s ease;
+                margin-bottom: 1.5rem;
             }}
             
             .card:hover {{
@@ -682,75 +956,51 @@ async def session_deep_dive(
                 letter-spacing: 1px;
             }}
             
-            .code-block {{
-                background: var(--code-bg);
-                border: 1px solid var(--border-color);
-                border-radius: 0.5rem;
-                padding: 1rem;
-                font-family: 'Courier New', monospace;
-                font-size: 0.875rem;
-                white-space: pre-wrap;
-                overflow-x: auto;
-                max-height: 300px;
-                overflow-y: auto;
-                color: var(--matrix-green);
-            }}
-            
-            .memory-flow {{
-                display: flex;
-                flex-direction: column;
-                gap: 1rem;
-            }}
-            
-            .memory-stage {{
-                padding: 1rem;
-                background: var(--code-bg);
-                border-radius: 0.5rem;
-                border-left: 4px solid var(--accent-color);
-            }}
-            
-            .memory-stage-title {{
-                font-weight: bold;
-                color: var(--accent-color);
-                margin-bottom: 0.5rem;
-            }}
-            
             .conversation-flow {{
-                display: flex;
-                flex-direction: column;
-                gap: 1rem;
-                max-height: 400px;
+                max-height: 600px;
                 overflow-y: auto;
             }}
             
-            .message {{
-                padding: 1rem;
-                border-radius: 0.5rem;
-                border-left: 4px solid;
+            .analyze-btn, .summary-analyze-btn {{
+                background: linear-gradient(135deg, var(--accent-color), var(--matrix-green));
+                border: none;
+                color: var(--background-color);
+                padding: 0.375rem 0.75rem;
+                border-radius: 0.375rem;
+                font-size: 0.75rem;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                font-family: inherit;
             }}
             
-            .message.user {{
-                background: rgba(37, 99, 235, 0.1);
-                border-left-color: var(--primary-color);
+            .analyze-btn:hover, .summary-analyze-btn:hover {{
+                transform: scale(1.05);
+                box-shadow: 0 0 15px rgba(0, 255, 65, 0.5);
             }}
             
-            .message.assistant {{
-                background: rgba(6, 214, 160, 0.1);
-                border-left-color: var(--accent-color);
-            }}
-            
-            .message-header {{
-                display: flex;
-                justify-content: space-between;
+            .analyze-modal {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                background: rgba(0, 0, 0, 0.8);
+                display: none;
+                z-index: 1000;
+                justify-content: center;
                 align-items: center;
-                margin-bottom: 0.5rem;
-                font-size: 0.875rem;
-                opacity: 0.8;
             }}
             
-            .message-content {{
-                font-size: 0.9rem;
-                line-height: 1.4;
+            .analyze-content {{
+                background: var(--card-color);
+                border-radius: 1rem;
+                padding: 2rem;
+                max-width: 900px;
+                max-height: 90vh;
+                overflow-y: auto;
+                border: 1px solid var(--border-color);
+                box-shadow: 0 0 30px rgba(0, 255, 65, 0.3);
             }}
             
             .cost-breakdown {{
@@ -779,79 +1029,30 @@ async def session_deep_dive(
                 opacity: 0.8;
                 text-transform: uppercase;
             }}
-            
-            .prompt-section {{
-                margin-bottom: 1.5rem;
+            /* Matrix Digital Rain Effect */
+            .matrix-bg {{
+                position: fixed;
+                top: 0;
+                left: 0;
+                width: 100%;
+                height: 100%;
+                pointer-events: none;
+                z-index: -1;
+                overflow: hidden;
             }}
-            
-            .prompt-part {{
-                margin-bottom: 1rem;
-                padding: 1rem;
-                background: var(--code-bg);
-                border-radius: 0.5rem;
-                border-left: 4px solid var(--matrix-green);
-            }}
-            
-            .prompt-part-title {{
-                font-weight: bold;
-                color: var(--matrix-green);
-                margin-bottom: 0.5rem;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-            }}
-            
-            .token-count {{
-                font-size: 0.75rem;
-                color: var(--accent-color);
-                background: rgba(6, 214, 160, 0.1);
-                padding: 0.25rem 0.5rem;
-                border-radius: 0.25rem;
-            }}
-            
-            .tabs {{
-                display: flex;
-                border-bottom: 1px solid var(--border-color);
-                margin-bottom: 1rem;
-            }}
-            
-            .tab {{
-                padding: 0.75rem 1.5rem;
-                background: none;
-                border: none;
-                color: var(--text-color);
-                cursor: pointer;
-                font-family: inherit;
-                transition: all 0.3s ease;
-            }}
-            
-            .tab.active {{
-                color: var(--matrix-green);
-                border-bottom: 2px solid var(--matrix-green);
-            }}
-            
-            .tab-content {{
-                display: none;
-            }}
-            
-            .tab-content.active {{
-                display: block;
-            }}
-            
-            @media (max-width: 768px) {{
-                .grid {{
-                    grid-template-columns: 1fr;
-                }}
-                
-                .metrics-grid {{
-                    grid-template-columns: repeat(2, 1fr);
-                }}
+
+            #matrix-canvas {{
+                width: 100%;
+                height: 100%;
+                opacity: 0.4;
             }}
         </style>
     </head>
     <body>
-        <div class="matrix-bg"></div>
-        
+        <div class="matrix-bg">
+            <canvas id="matrix-canvas"></canvas>
+        </div>
+
         <div class="container">
             <div class="breadcrumb">
                 <a href="/admin/">Dashboard</a>
@@ -864,6 +1065,9 @@ async def session_deep_dive(
             <div class="header">
                 <h1>🌐 SESSION DEEP DIVE</h1>
                 <div class="session-id">UUID: {session.get('uuid', 'Unknown')}</div>
+                <div style="font-size: 0.875rem; margin-top: 0.5rem; color: var(--accent-color);">
+                    ✅ Conversation: {len(conversation)} messages | Prompt: {prompt_construction.get("source", "Unknown")}
+                </div>
             </div>
             
             <!-- Overview Metrics -->
@@ -878,7 +1082,7 @@ async def session_deep_dive(
                         <div class="metric-label">Total Messages</div>
                     </div>
                     <div class="metric">
-                        <div class="metric-value">{total_tokens}</div>
+                        <div class="metric-value">{total_tokens:,}</div>
                         <div class="metric-label">Total Tokens</div>
                     </div>
                     <div class="metric">
@@ -910,11 +1114,11 @@ async def session_deep_dive(
                     </div>
                     <div class="cost-breakdown">
                         <div class="cost-item">
-                            <div class="cost-value">{input_tokens}</div>
+                            <div class="cost-value">{input_tokens:,}</div>
                             <div class="cost-label">Input Tokens</div>
                         </div>
                         <div class="cost-item">
-                            <div class="cost-value">{output_tokens}</div>
+                            <div class="cost-value">{output_tokens:,}</div>
                             <div class="cost-label">Output Tokens</div>
                         </div>
                         <div class="cost-item">
@@ -937,83 +1141,34 @@ async def session_deep_dive(
                         <span class="card-icon">🧠</span>
                         <span class="card-title">Memory System</span>
                     </div>
-                    <div class="memory-flow">
-                        <div class="memory-stage">
-                            <div class="memory-stage-title">Session Memory</div>
-                            <div>Characters: {current_chars} / {session_memory_limit}</div>
-                            <div>Messages: {total_interactions}</div>
+                    <div style="display: flex; flex-direction: column; gap: 1rem;">
+                        <div style="padding: 1rem; background: var(--code-bg); border-radius: 0.5rem; border-left: 4px solid var(--accent-color);">
+                            <div style="font-weight: bold; color: var(--accent-color); margin-bottom: 0.5rem;">Session Memory</div>
+                            <div>Characters: {current_chars:,} / {session_memory_limit:,}</div>
+                            <div>Current Messages: {stats.get('current_messages', 0)}</div>
                         </div>
-                        <div class="memory-stage">
-                            <div class="memory-stage-title">Persistent Memory</div>
-                            <div>Summary Length: {summary_length}</div>
+                        <div style="padding: 1rem; background: var(--code-bg); border-radius: 0.5rem; border-left: 4px solid var(--matrix-green);">
+                            <div style="font-weight: bold; color: var(--matrix-green); margin-bottom: 0.5rem;">Persistent Memory</div>
+                            <div>Summary Length: {summary_length:,}</div>
                             <div>Status: {summary_status}</div>
                         </div>
-                    </div>
-                </div>
-
-                <!-- Summarization Events -->
-                <div class="card">
-                    <div class="card-header">
-                        <span class="card-icon">📝</span>
-                        <span class="card-title">Summarization Events</span>
-                    </div>
-                    <div class="card-body">
-                        <div class="memory-flow">
-                            {summarization_events_html}
+                        <div style="padding: 1rem; background: var(--code-bg); border-radius: 0.5rem; border-left: 4px solid var(--warning-color);">
+                            <div style="font-weight: bold; color: var(--warning-color); margin-bottom: 0.5rem;">Historical Data</div>
+                            <div>Archived Interactions: {stats.get('historical_interactions', 0)}</div>
+                            <div>Total Messages: {total_messages}</div>
                         </div>
                     </div>
                 </div>
-            </div>
             </div>
             
-            <!-- Prompt Construction -->
+            <!-- Summarization Events -->
             <div class="card">
                 <div class="card-header">
-                    <span class="card-icon">🔧</span>
-                    <span class="card-title">Prompt Construction Analysis</span>
+                    <span class="card-icon">📝</span>
+                    <span class="card-title">Summarization Events</span>
                 </div>
-                
-                <div class="tabs">
-                    <button class="tab active" onclick="showTab('system-prompt')">System Prompt</button>
-                    <button class="tab" onclick="showTab('context-assembly')">Context Assembly</button>
-                    <button class="tab" onclick="showTab('final-prompt')">Final Prompt</button>
-                </div>
-                
-                <div id="system-prompt" class="tab-content active">
-                    <div class="prompt-part">
-                        <div class="prompt-part-title">
-                            System Instructions
-                            <span class="token-count">{system_prompt_length} chars</span>
-                        </div>
-                        <div class="code-block">{system_prompt[:2000]}{'...' if len(system_prompt) > 2000 else ''}</div>
-                    </div>
-                </div>
-                
-                <div id="context-assembly" class="tab-content">
-                    <div class="prompt-part">
-                        <div class="prompt-part-title">
-                            Persistent Memory
-                            <span class="token-count">{persistent_summary_length} chars</span>
-                        </div>
-                        <div class="code-block">{persistent_summary}</div>
-                    </div>
-                    <div class="prompt-part">
-                        <div class="prompt-part-title">
-                            Recent Session Context
-                            <span class="token-count">{recent_session_length} chars</span>
-                        </div>
-                        <div class="code-block">{context_html}</div>
-                    </div>
-                </div>
-                
-                <div id="final-prompt" class="tab-content">
-                    <div class="prompt-part">
-                        <div class="prompt-part-title">
-                            Complete Assembled Prompt
-                            <span class="token-count">~{estimated_tokens} tokens</span>
-                        </div>
-                        <div class="code-block">{final_prompt[:15000]}{'...' if len(final_prompt) > 15000 else ''}</div>
-                    </div>
+                <div style="max-height: 500px; overflow-y: auto;">
+                    {summarization_events_html}
                 </div>
             </div>
             
@@ -1022,11 +1177,17 @@ async def session_deep_dive(
                 <div class="card-header">
                     <span class="card-icon">💬</span>
                     <span class="card-title">Conversation Flow</span>
+                    <span style="color: var(--accent-color); font-size: 0.875rem;">
+                        {len(conversation)} messages loaded
+                    </span>
                 </div>
                 <div class="conversation-flow">
                     {conversation_html}
                 </div>
             </div>
+            
+            <!-- Final Prompt Section -->
+            {final_prompt_section}
             
             <!-- Session Configuration -->
             <div class="card">
@@ -1034,137 +1195,275 @@ async def session_deep_dive(
                     <span class="card-icon">⚙️</span>
                     <span class="card-title">Active Configuration</span>
                 </div>
-                <div class="code-block">{json.dumps(session_config, indent=2)}</div>
+                <div style="background: var(--code-bg); border: 1px solid var(--border-color); border-radius: 0.5rem; padding: 1rem; font-family: 'Courier New', monospace; font-size: 0.875rem; white-space: pre-wrap; overflow-x: auto; max-height: 300px; overflow-y: auto; color: var(--matrix-green);">{json.dumps(session_config, indent=2)}</div>
             </div>
         </div>
         
         <script>
             const sessionData = {session_json};
             
-            function showTab(tabName) {{
-                // Hide all tab contents
-                document.querySelectorAll('.tab-content').forEach(content => {{
-                    content.classList.remove('active');
-                }});
-                
-                // Remove active class from all tabs
-                document.querySelectorAll('.tab').forEach(tab => {{
-                    tab.classList.remove('active');
-                }});
-                
-                // Show selected tab content
-                document.getElementById(tabName).classList.add('active');
-                
-                // Add active class to clicked tab
-                event.target.classList.add('active');
+            // FIXED: Analyze message functionality with proper escaping
+            function analyzeMessage(messageIndex, messageText) {{
+                // Get session data for analysis
+                const promptData = sessionData.prompt_construction || {{}};
+                const conversationData = sessionData.conversation || [];
+
+                // Get the specific message data (including per-response prompt if available)
+                const messageData = conversationData[messageIndex] || {{}};
+                const hasPerResponsePrompt = messageData.final_prompt && messageData.final_prompt !== "Error reconstructing prompt";
+
+                let sessionMemory = "No session context";
+                if (conversationData.length > 0) {{
+                    const recentConversation = conversationData.slice(-10);
+                    sessionMemory = recentConversation.map(msg => 
+                        `${{msg.role}}: ${{msg.message}}`
+                    ).join('\\n\\n');
+                }}
+
+                const persistentMemory = promptData.persistent_summary || 'No persistent memory';
+
+                // Analyze message characteristics
+                const wordCount = messageText.split(' ').length;
+                const sentenceCount = messageText.split(/[.!?]+/).filter(s => s.trim().length > 0).length;
+                const hasCodeBlocks = /```|`/.test(messageText);
+                const hasLists = /^\\s*[-*•]\\s/m.test(messageText);
+                const hasTechnicalTerms = /\\b(API|database|function|error|config|server|client|endpoint|JSON|HTTP|SQL)\\b/i.test(messageText);
+                const hasQuestions = /\\?/.test(messageText);
+
+                // Create modal
+                let modal = document.getElementById('analyzeModal');
+                if (!modal) {{
+                    modal = document.createElement('div');
+                    modal.id = 'analyzeModal';
+                    modal.className = 'analyze-modal';
+                    modal.onclick = function(e) {{
+                        if (e.target === modal) closeAnalyzeModal();
+                    }};
+                    document.body.appendChild(modal);
+                }}
+
+                // Build per-response prompt section
+                const perResponsePromptSection = hasPerResponsePrompt ? `
+                    <!-- Per-Response Final Prompt - NEW -->
+                    <div style="margin-bottom: 1rem;">
+                        <div style="font-weight: bold; color: var(--matrix-green); margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                            <span>🎯 Final Prompt for This Response</span>
+                            <span style="font-size: 0.75rem; background: var(--matrix-green); color: var(--background-color); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
+                                ${{messageData.final_prompt_length?.toLocaleString() || 0}} chars | ~${{messageData.estimated_tokens?.toLocaleString() || 0}} tokens
+                            </span>
+                        </div>
+                        <div style="background: rgba(0, 255, 65, 0.05); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; max-height: 250px; overflow-y: auto; font-family: 'Courier New', monospace; white-space: pre-wrap; border: 1px solid var(--matrix-green);">
+                            ${{messageData.final_prompt || 'No prompt available'}}
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--matrix-green); margin-top: 0.5rem; opacity: 0.8;">
+                            Strategy: ${{messageData.strategy || 'unknown'}} | Model: ${{messageData.model || 'unknown'}} | Message #${{messageIndex + 1}}
+                        </div>
+                    </div>
+                ` : `
+                    <!-- No Per-Response Prompt Available -->
+                    <div style="margin-bottom: 1rem;">
+                        <div style="font-weight: bold; color: var(--warning-color); margin-bottom: 0.5rem;">⚠️ Per-Response Prompt Not Available</div>
+                        <div style="background: rgba(255, 214, 10, 0.1); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem; border: 1px solid var(--warning-color); text-align: center;">
+                            Per-response prompt reconstruction failed or not available for this message.
+                        </div>
+                    </div>
+                `;
+
+                modal.innerHTML = `
+                    <div class="analyze-content">
+                        <h3 style="color: var(--matrix-green); margin-bottom: 1rem;">🔍 Assistant Response Analysis - Message #${{messageIndex + 1}}</h3>
+
+                        <div style="display: grid; gap: 1.5rem;">
+                            <!-- Response Metrics -->
+                            <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--accent-color);">
+                                <div style="font-weight: bold; color: var(--accent-color); margin-bottom: 0.5rem;">📊 Response Metrics</div>
+                                <div style="display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.5rem; font-size: 0.875rem;">
+                                    <div>Characters: <span style="color: var(--matrix-green);">${{messageText.length}}</span></div>
+                                    <div>Words: <span style="color: var(--matrix-green);">${{wordCount}}</span></div>
+                                    <div>Sentences: <span style="color: var(--matrix-green);">${{sentenceCount}}</span></div>
+                                    <div>Est. Tokens: <span style="color: var(--matrix-green);">~${{Math.ceil(messageText.length / 4)}}</span></div>
+                                </div>
+                            </div>
+
+                            <!-- Response Characteristics -->
+                            <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--warning-color);">
+                                <div style="font-weight: bold; color: var(--warning-color); margin-bottom: 0.5rem;">🎯 Response Characteristics</div>
+                                <div style="font-size: 0.875rem; line-height: 1.6;">
+                                    • Structure: ${{hasLists ? 'Lists/bullets' : 'Prose'}}<br>
+                                    • Code blocks: ${{hasCodeBlocks ? 'Yes' : 'No'}}<br>
+                                    • Technical content: ${{hasTechnicalTerms ? 'Yes' : 'No'}}<br>
+                                    • Contains questions: ${{hasQuestions ? 'Yes' : 'No'}}
+                                </div>
+                            </div>
+
+                            <!-- Per-Response Prompt Context -->
+                            <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--matrix-green); max-height: 500px; overflow-y: auto;">
+                                <div style="font-weight: bold; color: var(--matrix-green); margin-bottom: 1rem;">🧠 Prompt Used for This Response</div>
+
+                                ${{perResponsePromptSection}}
+
+                                <div style="margin-bottom: 1rem;">
+                                    <div style="font-weight: bold; color: var(--accent-color); margin-bottom: 0.5rem;">📚 Persistent Memory (Reference)</div>
+                                    <div style="background: rgba(0, 0, 0, 0.3); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem; max-height: 100px; overflow-y: auto; font-family: 'Courier New', monospace; white-space: pre-wrap;">
+                                        ${{persistentMemory}}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div style="text-align: center; margin-top: 1.5rem;">
+                            <button onclick="closeAnalyzeModal()" style="background: var(--primary-color); color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-weight: 500;">
+                                Close Analysis
+                            </button>
+                        </div>
+                    </div>
+                `;
+
+                modal.style.display = 'flex';
+            }}
+
+            function closeAnalyzeModal() {{
+                const modal = document.getElementById('analyzeModal');
+                if (modal) {{
+                    modal.style.display = 'none';
+                }}
             }}
             
-            // Add some Matrix-style effects
-            function createMatrixEffect() {{
-                const chars = '01アイウエオカキクケコサシスセソタチツテトナニヌネノハヒフヘホマミムメモヤユヨラリルレロワヲン';
-                const canvas = document.createElement('canvas');
-                canvas.style.position = 'fixed';
-                canvas.style.top = '0';
-                canvas.style.left = '0';
-                canvas.style.width = '100%';
-                canvas.style.height = '100%';
-                canvas.style.pointerEvents = 'none';
-                canvas.style.zIndex = '0';
-                canvas.style.opacity = '0.1';
-                document.body.appendChild(canvas);
-                
-                const ctx = canvas.getContext('2d');
-                canvas.width = window.innerWidth;
-                canvas.height = window.innerHeight;
-                
-                const drops = [];
-                for (let i = 0; i < canvas.width / 20; i++) {{
-                    drops[i] = 1;
+            // FIXED: Summary details functionality
+            function showSummaryDetails(eventIndex) {{
+                const detailsDiv = document.getElementById(`summary-details-${{eventIndex}}`);
+                if (detailsDiv) {{
+                    if (detailsDiv.style.display === 'none') {{
+                        detailsDiv.style.display = 'block';
+                    }} else {{
+                        detailsDiv.style.display = 'none';
+                    }}
+                }}
+            }}
+            
+            console.log('✅ Session Deep Dive loaded with Conversation & Prompt Data');
+            console.log('📊 Conversation messages loaded:', sessionData.conversation ? sessionData.conversation.length : 0);
+            console.log('📜 Prompt data source:', sessionData.prompt_construction ? sessionData.prompt_construction.source : 'Unknown');
+
+ // Matrix Digital Rain Effect
+            class MatrixRain {{
+                constructor() {{
+                    this.canvas = document.getElementById('matrix-canvas');
+                    this.ctx = this.canvas.getContext('2d');
+                    this.characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789@#$%^&*()_+-=[]{{}}|;:,.<>?アイウエオカキクケコ';
+                    
+                    this.resize();
+                    this.init();
+                    this.animate();
+                    
+                    // Throttled resize handler
+                    let resizeTimeout;
+                    window.addEventListener('resize', () => {{
+                        clearTimeout(resizeTimeout);
+                        resizeTimeout = setTimeout(() => this.resize(), 250);
+                    }});
                 }}
                 
-                function draw() {{
-                    ctx.fillStyle = 'rgba(15, 23, 42, 0.05)';
-                    ctx.fillRect(0, 0, canvas.width, canvas.height);
+                resize() {{
+                    this.canvas.width = window.innerWidth;
+                    this.canvas.height = window.innerHeight;
                     
-                    ctx.fillStyle = '#00ff41';
-                    ctx.font = '12px monospace';
+                    this.fontSize = 14;
+                    this.columns = Math.floor(this.canvas.width / this.fontSize);
+                    this.drops = new Array(this.columns).fill(1);
                     
-                    for (let i = 0; i < drops.length; i++) {{
-                        const text = chars[Math.floor(Math.random() * chars.length)];
-                        ctx.fillText(text, i * 20, drops[i] * 20);
-                        
-                        if (drops[i] * 20 > canvas.height && Math.random() > 0.975) {{
-                            drops[i] = 0;
-                        }}
-                        drops[i]++;
+                    // Set canvas style for smooth rendering
+                    this.ctx.fillStyle = '#00ff41';
+                    this.ctx.font = `${{this.fontSize}}px 'Courier New', monospace`;
+                }}
+                
+                init() {{
+                    // Initialize drops array
+                    for (let i = 0; i < this.columns; i++) {{
+                        this.drops[i] = Math.random() * -100;
                     }}
                 }}
                 
-                setInterval(draw, 100);
+                animate() {{
+                    // Semi-transparent background for trail effect
+                    this.ctx.fillStyle = 'rgba(15, 23, 42, 0.05)';
+                    this.ctx.fillRect(0, 0, this.canvas.width, this.canvas.height);
+                    
+                    // Set text color
+                    this.ctx.fillStyle = '#00ff41';
+                    
+                    // Draw characters
+                    for (let i = 0; i < this.drops.length; i++) {{
+                        const char = this.characters[Math.floor(Math.random() * this.characters.length)];
+                        const x = i * this.fontSize;
+                        const y = this.drops[i] * this.fontSize;
+                        
+                        this.ctx.fillText(char, x, y);
+                        
+                        // Reset drop when it goes off screen
+                        if (y > this.canvas.height && Math.random() > 0.975) {{
+                            this.drops[i] = 0;
+                        }}
+                        
+                        this.drops[i]++;
+                    }}
+                    
+                    // Request next frame (60fps max)
+                    requestAnimationFrame(() => this.animate());
+                }}
             }}
             
-            // Start matrix effect after page load
-            setTimeout(createMatrixEffect, 1000);
+            // Initialize Matrix effect - MUCH lighter
+            document.addEventListener('DOMContentLoaded', () => {{
+                new MatrixRain();
+            }});
         </script>
     </body>
     </html>
     """
     
     return HTMLResponse(content=html)
+
 @router.get("/sessions", response_class=HTMLResponse)
 async def sessions_dashboard(
     request: Request,
     limit: int = Query(50, description="Number of sessions to show")
 ):
-    """Enhanced sessions dashboard with deep dive links"""
+    """FIXED sessions dashboard with proper historical data"""
     
     sessions: List[Dict[str, Any]] = get_active_sessions(limit=limit)
     
-    # Add cost estimates to each session - with proper type handling
-    for session in sessions:
-        if isinstance(session, dict):
-            uuid = session.get("uuid", "")
-            if uuid:
-                # Get real conversation for this session
-                real_conversation = get_all_session_memory(uuid)
-                real_conversation_data = {"conversation": real_conversation}
-                session["cost_estimate"] = calculate_session_cost(real_conversation_data).get("total_cost", 0.0)
-            else:
-                session["cost_estimate"] = 0.0
-    
-    # Calculate aggregate stats with type safety
+    # Calculate aggregate stats with proper data
     total_sessions = len(sessions)
-    total_messages = sum(session.get("message_count", 0) if isinstance(session, dict) else 0 for session in sessions)
+    total_messages = sum(session.get("message_count", 0) for session in sessions)
+    total_cost = sum(session.get("cost_estimate", 0.0) for session in sessions)
     avg_messages = total_messages / total_sessions if total_sessions > 0 else 0
     
     now = datetime.datetime.now()
     active_today = sum(
         1 for session in sessions 
-        if isinstance(session, dict) and 
-        session.get("last_interaction") and 
+        if session.get("last_interaction") and 
         (now - datetime.datetime.fromisoformat(session["last_interaction"])).total_seconds() < 86400
     )
     
-    # Generate table rows with type safety
+    # Generate table rows with enhanced data
     table_rows = []
     for session in sessions:
-        if not isinstance(session, dict):
-            continue
-            
         uuid = session.get("uuid", "")
         last_interaction = session.get("last_interaction", "")
         message_count = session.get("message_count", 0)
         summary = session.get("summary", "")
         cost_estimate = session.get("cost_estimate", 0.0)
+        status = session.get("status", "unknown")
+        current_messages = session.get("current_messages", 0)
+        historical_interactions = session.get("historical_interactions", 0)
         
-        # Check if session is active
-        is_active = (
-            last_interaction and 
-            (now - datetime.datetime.fromisoformat(last_interaction)).total_seconds() < 86400
-        )
+        # Enhanced status display
+        status_display = f"{status.title()}"
+        if historical_interactions > 0:
+            status_display += f" ({historical_interactions} archived)"
         
-        badge_class = 'badge-active' if is_active else 'badge-inactive'
-        badge_text = 'Active' if is_active else 'Inactive'
+        badge_class = 'badge-active' if current_messages > 0 else 'badge-inactive'
         date_display = last_interaction.split("T")[0] if last_interaction else ""
         
         table_rows.append(f"""
@@ -1174,10 +1473,15 @@ async def sessions_dashboard(
             </td>
             <td>
                 {date_display}
-                <span class="badge {badge_class}">{badge_text}</span>
+                <span class="badge {badge_class}">{status_display}</span>
             </td>
-            <td>{message_count}</td>
-            <td>${cost_estimate:.4f}</td>
+            <td>
+                <strong>{message_count}</strong>
+                <br><small>Current: {current_messages} | Archive: {historical_interactions}</small>
+            </td>
+            <td>
+                <strong>${cost_estimate:.4f}</strong>
+            </td>
             <td>
                 <div class="truncate">{summary}</div>
             </td>
@@ -1193,6 +1497,7 @@ async def sessions_dashboard(
         "stats": {
             "total_sessions": total_sessions,
             "total_messages": total_messages,
+            "total_cost": total_cost,
             "avg_messages": avg_messages,
             "active_today": active_today
         }
@@ -1204,7 +1509,7 @@ async def sessions_dashboard(
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Mobeus Assistant — Session Management Dashboard</title>
+        <title>Mobeus Assistant — Session Management Dashboard </title>
         <script src="https://cdn.jsdelivr.net/npm/chart.js@3.7.1/dist/chart.min.js"></script>
         <style>
             :root {{
@@ -1271,16 +1576,6 @@ async def sessions_dashboard(
             
             h1 {{
                 font-size: 1.5rem;
-            }}
-            
-            h2 {{
-                font-size: 1.25rem;
-                margin-bottom: 1rem;
-            }}
-            
-            h3 {{
-                font-size: 1rem;
-                margin-bottom: 0.5rem;
             }}
             
             .card {{
@@ -1398,11 +1693,6 @@ async def sessions_dashboard(
                 max-width: 250px;
             }}
             
-            .cost-highlight {{
-                font-weight: 600;
-                color: var(--warning-color);
-            }}
-            
             @media (max-width: 768px) {{
                 .grid-layout {{
                     grid-template-columns: 1fr;
@@ -1423,7 +1713,7 @@ async def sessions_dashboard(
             </div>
             
             <div class="header">
-                <h1>🎯 Session Management Dashboard</h1>
+                <h1>🎯 Session Management Dashboard </h1>
             </div>
             
             <div class="card">
@@ -1441,36 +1731,16 @@ async def sessions_dashboard(
                             <div class="metric-label">Active Today</div>
                         </div>
                         <div class="metric">
-                            <div class="metric-value">{total_messages}</div>
+                            <div class="metric-value">{total_messages:,}</div>
                             <div class="metric-label">Total Messages</div>
                         </div>
                         <div class="metric">
                             <div class="metric-value">{avg_messages:.1f}</div>
                             <div class="metric-label">Avg Messages/Session</div>
                         </div>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="grid-layout">
-                <div class="card">
-                    <div class="card-header">
-                        📈 Session Activity Trend
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container">
-                            <canvas id="sessionActivityChart"></canvas>
-                        </div>
-                    </div>
-                </div>
-                
-                <div class="card">
-                    <div class="card-header">
-                        💬 Message Distribution
-                    </div>
-                    <div class="card-body">
-                        <div class="chart-container">
-                            <canvas id="messageDistributionChart"></canvas>
+                        <div class="metric">
+                            <div class="metric-value">${total_cost:.4f}</div>
+                            <div class="metric-label">Total Est. Cost</div>
                         </div>
                     </div>
                 </div>
@@ -1478,7 +1748,7 @@ async def sessions_dashboard(
             
             <div class="card">
                 <div class="card-header">
-                    🔍 Active Sessions
+                    🔍 All Sessions
                     <span>{total_sessions} sessions</span>
                 </div>
                 <div class="card-body">
@@ -1502,94 +1772,10 @@ async def sessions_dashboard(
                 </div>
             </div>
         </div>
-        
         <script>
-            // Parse data
             const dashboardData = {data_json};
-            
-            // Helper function to format date
-            function formatDate(dateString) {{
-                if (!dateString) return '';
-                const date = new Date(dateString);
-                return date.toLocaleDateString();
-            }}
-            
-            // Calculate session activity data
-            const activityData = {{}};
-            dashboardData.sessions.forEach(session => {{
-                if (session.last_interaction) {{
-                    const date = formatDate(session.last_interaction);
-                    activityData[date] = (activityData[date] || 0) + 1;
-                }}
-            }});
-            
-            const activityDates = Object.keys(activityData).sort();
-            const activityCounts = activityDates.map(date => activityData[date]);
-            
-            // Session Activity Chart
-            const sessionActivityCtx = document.getElementById('sessionActivityChart').getContext('2d');
-            new Chart(sessionActivityCtx, {{
-                type: 'line',
-                data: {{
-                    labels: activityDates,
-                    datasets: [{{
-                        label: 'Active Sessions',
-                        data: activityCounts,
-                        backgroundColor: 'rgba(37, 99, 235, 0.1)',
-                        borderColor: '#2563eb',
-                        borderWidth: 2,
-                        tension: 0.4,
-                        fill: true
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    scales: {{
-                        y: {{
-                            beginAtZero: true,
-                            title: {{
-                                display: true,
-                                text: 'Number of Sessions'
-                            }}
-                        }}
-                    }}
-                }}
-            }});
-            
-            // Message Distribution Chart
-            const messageDistributionCtx = document.getElementById('messageDistributionChart').getContext('2d');
-            
-            // Calculate total messages by role
-            let totalUserMessages = 0;
-            let totalAssistantMessages = 0;
-            
-            dashboardData.sessions.forEach(session => {{
-                totalUserMessages += session.user_messages || 0;
-                totalAssistantMessages += session.assistant_messages || 0;
-            }});
-            
-            new Chart(messageDistributionCtx, {{
-                type: 'pie',
-                data: {{
-                    labels: ['User Messages', 'Assistant Messages'],
-                    datasets: [{{
-                        data: [totalUserMessages, totalAssistantMessages],
-                        backgroundColor: ['#f59e0b', '#3b82f6'],
-                        borderColor: ['#d97706', '#2563eb'],
-                        borderWidth: 1
-                    }}]
-                }},
-                options: {{
-                    responsive: true,
-                    maintainAspectRatio: false,
-                    plugins: {{
-                        legend: {{
-                            position: 'right'
-                        }}
-                    }}
-                }}
-            }});
+            console.log('✅ Sessions Dashboard loaded with FIXED historical data integration');
+            console.log('📊 Dashboard stats:', dashboardData.stats);
         </script>
     </body>
     </html>

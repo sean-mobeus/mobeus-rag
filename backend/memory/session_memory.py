@@ -129,61 +129,148 @@ def check_and_manage_memory(uuid: str):
         summarize_and_archive_session(uuid, "auto_limit")
 
 def log_summarization_event(uuid: str, event_type: str, details: Optional[dict] = None):
-    """Log summarization events for dashboard visibility"""
+    """Log summarization events for dashboard visibility - now to both file AND database"""
+    
+    # File logging (keep existing behavior)
     with open("summarization_events.jsonl", "a") as f:
         entry = {
             "timestamp": datetime.now().isoformat(),
             "user_uuid": uuid,
-            "event_type": event_type,  # "auto_limit", "auto_disconnect", "manual_tool"
+            "event_type": event_type,
             "details": details or {}
         }
         f.write(json.dumps(entry) + "\n")
+    
+    # ADD database logging
+    def _log_to_db():
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                details_dict = details or {}
+                cur.execute("""
+                    INSERT INTO summarization_events 
+                    (uuid, event_type, trigger_reason, conversation_length, 
+                     summary_generated, chars_before, chars_after, details)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    uuid,
+                    event_type,
+                    details_dict.get('trigger_reason', event_type),
+                    details_dict.get('conversation_length', 0),
+                    details_dict.get('summary', ''),
+                    details_dict.get('chars_before', 0),
+                    details_dict.get('chars_after', 0),
+                    json.dumps(details_dict)
+                ))
+                conn.commit()
+    
+    execute_db_operation(_log_to_db)
+
+def store_session_prompt(user_uuid: str, prompt_data: dict):
+    """Store the actual prompt used for a session - ENHANCED DEBUG VERSION"""
+    def _store_impl():
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Enhanced debugging
+                final_prompt = prompt_data.get('final_prompt', '')
+                prompt_length = len(final_prompt)
+                
+                print(f"🔍 STORING PROMPT for {user_uuid}:")
+                print(f"   - Final prompt length: {prompt_length} chars")
+                print(f"   - Strategy: {prompt_data.get('strategy', 'auto')}")
+                print(f"   - Model: {prompt_data.get('model', 'unknown')}")
+                print(f"   - Estimated tokens: {prompt_data.get('estimated_tokens', 0)}")
+                
+                cur.execute("""
+                    INSERT INTO session_prompts 
+                    (uuid, system_prompt, persistent_summary, session_context, 
+                     final_prompt, prompt_length, estimated_tokens, strategy, model)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    user_uuid,
+                    prompt_data.get('system_prompt', ''),
+                    prompt_data.get('persistent_summary', ''),
+                    prompt_data.get('session_context', ''),
+                    final_prompt,
+                    prompt_length,
+                    prompt_data.get('estimated_tokens', 0),
+                    prompt_data.get('strategy', 'auto'),
+                    prompt_data.get('model', '')
+                ))
+                conn.commit()
+                
+                # Verify the data was stored
+                cur.execute("""
+                    SELECT COUNT(*), MAX(prompt_length) 
+                    FROM session_prompts 
+                    WHERE uuid = %s
+                """, (user_uuid,))
+                
+                count, max_length = cur.fetchone()
+                print(f"✅ VERIFICATION: {count} prompt records for {user_uuid}, max length: {max_length}")
+    
+    execute_db_operation(_store_impl)
+    print(f"✅ Stored prompt data for session {user_uuid}")
+
 
 def summarize_and_archive_session(uuid: str, reason: str = "auto_limit"):
     """
     Summarize current session memory and move it to persistent memory
+    NOW WITH COMPLETE DATA PRESERVATION
     """
     try:
-        # Get conversation text for summarization
+        # STEP 1: Store complete session snapshot BEFORE summarization
+        print(f"📸 STORING SESSION SNAPSHOT before summarization for {uuid}")
+        interactions_stored = store_session_snapshot_before_summarization(uuid, reason)
+        
+        # STEP 2: Get conversation text for summarization
         conversation_text = format_conversation_for_summary(uuid)
-        print(f"📝 CONVERSATION LENGTH: {len(conversation_text)} chars")
+        chars_before = len(conversation_text)
+        print(f"📝 CONVERSATION LENGTH: {chars_before} chars")
         
         if not conversation_text.strip():
             print(f"⚠️ No conversation to summarize for {uuid}")
             return
         
         print(f"📝 GENERATING SUMMARY for {uuid}...")
-        # Generate summary using OpenAI
+        # STEP 3: Generate summary using OpenAI
         summary = generate_conversation_summary(conversation_text)
         print(f"📝 SUMMARY GENERATED: {len(summary) if summary else 0} chars")
         
         if summary:
-            # Store summary in persistent memory
+            # STEP 4: Store summary in persistent memory
             from memory.persistent_memory import append_to_summary
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
             summary_with_timestamp = f"[{timestamp}] {summary}"
             print(f"📝 STORING SUMMARY in persistent memory for {uuid}")
             append_to_summary(uuid, summary_with_timestamp)
             
-            # LOG THE EVENT
+            # STEP 5: LOG THE EVENT WITH COMPLETE DATA
             log_summarization_event(uuid, reason, {
-                "conversation_length": len(conversation_text),
+                "conversation_length": chars_before,
                 "summary_length": len(summary),
-                "timestamp": timestamp
+                "summary": summary,  # STORE ACTUAL SUMMARY
+                "chars_before": chars_before,
+                "chars_after": 0,
+                "interactions_preserved": interactions_stored,
+                "timestamp": timestamp,
+                "trigger_reason": reason
             })
             
-            # Clear session memory
+            # STEP 6: Clear session memory (now that everything is preserved)
             print(f"📝 CLEARING SESSION MEMORY for {uuid}")
             clear_session_memory(uuid)
             
             print(f"✅ Session memory summarized and archived for {uuid}")
+            return True
         else:
             print(f"⚠️ Failed to generate summary for {uuid}")
+            return False
             
     except Exception as e:
         print(f"❌ Error summarizing session for {uuid}: {e}")
         import traceback
         traceback.print_exc()
+        return False
 
 def generate_conversation_summary(conversation_text: str) -> Optional[str]:
     """
@@ -243,3 +330,143 @@ def get_memory_stats(uuid: str) -> Dict[str, Any]:
     except Exception as e:
         print(f"❌ Error getting memory stats: {e}")
         return {}
+    
+def force_session_summary(uuid: str, reason: str = "user_requested"):
+    """
+    Force summarization with comprehensive logging and validation
+    """
+    try:
+        print(f"🤖 FORCE SUMMARIZATION: Starting for {uuid} - reason: {reason}")
+        
+        # Check if there's anything to summarize
+        current_size = get_session_memory_size(uuid)
+        print(f"📊 CURRENT SESSION SIZE: {current_size} chars")
+        
+        if current_size > 100:  # Only summarize if substantial content
+            print(f"📝 FORCING SUMMARIZATION ({reason}) for {uuid}")
+            summarize_and_archive_session(uuid, reason)
+            
+            # Verify it worked
+            final_size = get_session_memory_size(uuid)
+            print(f"📊 FINAL SESSION SIZE: {final_size} chars")
+            
+            if final_size == 0:
+                print(f"✅ FORCE SUMMARIZATION SUCCESS for {uuid}")
+                return True
+            else:
+                print(f"⚠️ FORCE SUMMARIZATION INCOMPLETE for {uuid}")
+                return False
+        else:
+            print(f"⏭️ SKIPPING SUMMARIZATION: Too little content ({current_size} chars)")
+            return False
+            
+    except Exception as e:
+        print(f"❌ FORCE SUMMARIZATION FAILED for {uuid}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+def store_session_snapshot_before_summarization(uuid: str, reason: str):
+    """
+    Store complete session data BEFORE summarization for historical analysis
+    This preserves the conversation data that would otherwise be lost
+    """
+    try:
+        # Get all current session data
+        conversation = get_all_session_memory(uuid)
+        if not conversation:
+            print(f"⚠️ No conversation to snapshot for {uuid}")
+            return
+            
+        # Store each interaction in interaction_logs for historical analysis
+        from datetime import datetime
+        snapshot_time = datetime.now()
+        
+        def _store_snapshot():
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    # Create pairs of user->assistant interactions
+                    current_user_msg = None
+                    interaction_count = 0
+                    
+                    for msg in conversation:
+                        if msg["role"] == "user":
+                            current_user_msg = msg["message"]
+                        elif msg["role"] == "assistant" and current_user_msg:
+                            interaction_count += 1
+                            interaction_id = f"{uuid}_snapshot_{snapshot_time.strftime('%Y%m%d_%H%M%S')}_{interaction_count}"
+                            
+                            cur.execute("""
+                                INSERT INTO interaction_logs 
+                                (uuid, interaction_id, created_at, user_message, assistant_response, 
+                                 rag_context, strategy, model, tools_called)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            """, (
+                                uuid,
+                                interaction_id,
+                                msg.get("created_at", snapshot_time),
+                                current_user_msg,
+                                msg["message"],
+                                f"Pre-summarization snapshot - {reason}",
+                                "historical_data",
+                                runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17"),
+                                "Historical snapshot - no tool data"
+                            ))
+                            current_user_msg = None
+                    
+                    conn.commit()
+                    print(f"✅ Stored {interaction_count} interactions as historical snapshot for {uuid}")
+                    return interaction_count
+        
+        return execute_db_operation(_store_snapshot)
+        
+    except Exception as e:
+        print(f"❌ Error storing session snapshot: {e}")
+        import traceback
+        traceback.print_exc()
+        return 0
+    
+def debug_prompt_storage(uuid: str):
+    """Debug function to check what prompt data exists for a session"""
+    def _debug_impl():
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # Check if table exists
+                cur.execute("""
+                    SELECT COUNT(*) FROM information_schema.tables 
+                    WHERE table_name = 'session_prompts'
+                """)
+                table_exists = cur.fetchone()[0] > 0
+                print(f"🔍 session_prompts table exists: {table_exists}")
+                
+                if not table_exists:
+                    return {"error": "session_prompts table does not exist"}
+                
+                # Check all records for this UUID
+                cur.execute("""
+                    SELECT id, created_at, prompt_length, strategy, model, 
+                           LENGTH(final_prompt) as actual_prompt_length
+                    FROM session_prompts 
+                    WHERE uuid = %s 
+                    ORDER BY created_at DESC
+                """, (uuid,))
+                
+                records = []
+                for row in cur.fetchall():
+                    records.append({
+                        "id": row[0],
+                        "created_at": row[1].isoformat() if row[1] else None,
+                        "stored_prompt_length": row[2],
+                        "actual_prompt_length": row[5],
+                        "strategy": row[3],
+                        "model": row[4]
+                    })
+                
+                return {
+                    "total_records": len(records),
+                    "records": records
+                }
+    
+    result = execute_db_operation(_debug_impl)
+    print(f"🔍 PROMPT DEBUG for {uuid}: {result}")
+    return result
