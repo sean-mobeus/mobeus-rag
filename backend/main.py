@@ -195,3 +195,23 @@ async def debug_config():
         "realtime_model": runtime_config.get("REALTIME_MODEL"),
         "realtime_voice": runtime_config.get("REALTIME_VOICE")
     }
+
+@app.get("/debug/session-data/{uuid}")
+async def debug_session_data(uuid: str):
+    """Debug session data retrieval"""
+    try:
+        from memory.session_memory import get_all_session_memory
+        from memory.persistent_memory import get_summary
+        
+        conversation = get_all_session_memory(uuid)
+        summary = get_summary(uuid)
+        
+        return {
+            "uuid": uuid,
+            "conversation_count": len(conversation) if conversation else 0,
+            "conversation_preview": conversation[:2] if conversation else [],
+            "summary_length": len(summary) if summary else 0,
+            "summary_preview": summary[:200] if summary else "No summary"
+        }
+    except Exception as e:
+        return {"error": str(e), "uuid": uuid}
