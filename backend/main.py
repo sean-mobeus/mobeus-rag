@@ -128,6 +128,43 @@ async def query_rag_endpoint(payload: QueryRequest):
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
+# Endpoint to clear both session and persistent memory
+@app.post("/api/clear-memory")
+async def clear_memory_endpoint(payload: QueryRequest):  # Reusing QueryRequest which has uuid
+    try:
+        uuid = payload.uuid
+        
+        # Get current memory stats before clearing
+        from memory.session_memory import get_session_memory_size, get_all_session_memory
+        from memory.persistent_memory import get_summary, clear_summary
+        
+        session_size = get_session_memory_size(uuid)
+        session_messages = len(get_all_session_memory(uuid))
+        persistent_summary = get_summary(uuid)
+        persistent_size = len(persistent_summary) if persistent_summary else 0
+        
+        # Clear both session and persistent memory
+        from memory.session_memory import clear_session_memory
+        clear_session_memory(uuid)
+        clear_summary(uuid)
+        
+        print(f"🗑️ Cleared all memory for {uuid}: {session_messages} messages, {session_size + persistent_size} total chars")
+        
+        return {
+            "success": True,
+            "cleared": {
+                "session_messages": session_messages,
+                "session_chars": session_size,
+                "persistent_chars": persistent_size,
+                "total_chars": session_size + persistent_size
+            }
+        }
+
+    except Exception as e:
+        print(f"❌ Exception occurred during memory clear:")
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
 # Debug endpoints - keep for troubleshooting
 @app.get("/debug/routes")
 async def list_routes():

@@ -59,3 +59,25 @@ def append_to_summary(uuid: str, new_info: str):
     If no summary exists, creates a new one.
     """
     return execute_db_operation(_append_to_summary_impl, uuid, new_info)
+
+def _clear_summary_impl(uuid: str):
+    """Implementation of clear_summary without error handling"""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM persistent_memory WHERE uuid = %s",
+                (uuid,)
+            )
+            conn.commit()
+
+def clear_summary(uuid: str):
+    """
+    Clear all persistent memory for a user.
+    Returns True if successful, False otherwise.
+    """
+    try:
+        execute_db_operation(_clear_summary_impl, uuid)
+        return True
+    except Exception as e:
+        print(f"❌ Error clearing persistent memory for {uuid}: {e}")
+        return False

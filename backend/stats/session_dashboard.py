@@ -88,9 +88,60 @@ def get_comprehensive_conversation_data(uuid: str) -> List[Dict[str, Any]]:
         
         # Sort by created_at timestamp
         all_messages.sort(key=lambda x: x.get("created_at", ""))
+
+        enhanced_messages = []
+        conversation_context = []
+
+        for i, msg in enumerate(all_messages):
+            enhanced_msg = dict(msg)  # Copy the message
+    
+            if msg["role"] == "assistant":
+                # Reconstruct the final prompt for this specific response
+                try:
+                    # Get base system prompt and session context from most recent session prompt
+                    prompt_data = get_comprehensive_final_prompt_fixed(uuid) if uuid else {}
+                    base_system_prompt = prompt_data.get("system_prompt", "")
+                    persistent_summary = prompt_data.get("persistent_summary", "")
+            
+                    # Build conversation context up to this point
+                    context_messages = []
+                    for prev_msg in conversation_context:
+                        role = prev_msg["role"].title()
+                        message = prev_msg["message"]
+                        context_messages.append(f"{role}: {message}")
+            
+                    conversation_text = "\n\n".join(context_messages) if context_messages else "No previous conversation"
+            
+                    # Reconstruct final prompt
+                    context_parts = []
+                    if persistent_summary:
+                        context_parts.append(f"User Background:\n{persistent_summary}")
+                    if conversation_text:
+                        context_parts.append(f"Recent Conversation:\n{conversation_text}")
+            
+                    if context_parts:
+                        final_prompt = base_system_prompt + f"\n\nContext about this user:\n\n{chr(10).join(context_parts)}"
+                    else:
+                        final_prompt = base_system_prompt
+            
+                    # Add prompt data to the message
+                    enhanced_msg["final_prompt"] = final_prompt
+                    enhanced_msg["final_prompt_length"] = len(final_prompt)
+                    enhanced_msg["estimated_tokens"] = len(final_prompt) // 4
+                    enhanced_msg["strategy"] = prompt_data.get("strategy", "auto")
+                    enhanced_msg["model"] = prompt_data.get("model", "unknown")
+            
+                except Exception as e:
+                    print(f"⚠️ Error reconstructing prompt for message {i}: {e}")
+                    enhanced_msg["final_prompt"] = "Error reconstructing prompt"
+                    enhanced_msg["final_prompt_length"] = 0
+                    enhanced_msg["estimated_tokens"] = 0
+    
+            enhanced_messages.append(enhanced_msg)
+            conversation_context.append(msg)  # Add to context for next iteration
         
-        print(f"✅ Total conversation messages retrieved: {len(all_messages)}")
-        return all_messages
+        print(f"✅ Total conversation messages retrieved: {len(enhanced_messages)}")
+        return enhanced_messages
         
     except Exception as e:
         print(f"❌ Error getting comprehensive conversation: {e}")
@@ -1156,7 +1207,11 @@ async def session_deep_dive(
                 // Get session data for analysis
                 const promptData = sessionData.prompt_construction || {{}};
                 const conversationData = sessionData.conversation || [];
-                
+
+                // Get the specific message data (including per-response prompt if available)
+                const messageData = conversationData[messageIndex] || {{}};
+                const hasPerResponsePrompt = messageData.final_prompt && messageData.final_prompt !== "Error reconstructing prompt";
+
                 let sessionMemory = "No session context";
                 if (conversationData.length > 0) {{
                     const recentConversation = conversationData.slice(-10);
@@ -1164,9 +1219,9 @@ async def session_deep_dive(
                         `${{msg.role}}: ${{msg.message}}`
                     ).join('\\n\\n');
                 }}
-                
+
                 const persistentMemory = promptData.persistent_summary || 'No persistent memory';
-                
+
                 // Analyze message characteristics
                 const wordCount = messageText.split(' ').length;
                 const sentenceCount = messageText.split(/[.!?]+/).filter(s => s.trim().length > 0).length;
@@ -1174,7 +1229,7 @@ async def session_deep_dive(
                 const hasLists = /^\\s*[-*•]\\s/m.test(messageText);
                 const hasTechnicalTerms = /\\b(API|database|function|error|config|server|client|endpoint|JSON|HTTP|SQL)\\b/i.test(messageText);
                 const hasQuestions = /\\?/.test(messageText);
-                
+
                 // Create modal
                 let modal = document.getElementById('analyzeModal');
                 if (!modal) {{
@@ -1186,11 +1241,38 @@ async def session_deep_dive(
                     }};
                     document.body.appendChild(modal);
                 }}
-                
+
+                // Build per-response prompt section
+                const perResponsePromptSection = hasPerResponsePrompt ? `
+                    <!-- Per-Response Final Prompt - NEW -->
+                    <div style="margin-bottom: 1rem;">
+                        <div style="font-weight: bold; color: var(--matrix-green); margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                            <span>🎯 Final Prompt for This Response</span>
+                            <span style="font-size: 0.75rem; background: var(--matrix-green); color: var(--background-color); padding: 0.25rem 0.5rem; border-radius: 0.25rem;">
+                                ${{messageData.final_prompt_length?.toLocaleString() || 0}} chars | ~${{messageData.estimated_tokens?.toLocaleString() || 0}} tokens
+                            </span>
+                        </div>
+                        <div style="background: rgba(0, 255, 65, 0.05); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.75rem; max-height: 250px; overflow-y: auto; font-family: 'Courier New', monospace; white-space: pre-wrap; border: 1px solid var(--matrix-green);">
+                            ${{messageData.final_prompt || 'No prompt available'}}
+                        </div>
+                        <div style="font-size: 0.7rem; color: var(--matrix-green); margin-top: 0.5rem; opacity: 0.8;">
+                            Strategy: ${{messageData.strategy || 'unknown'}} | Model: ${{messageData.model || 'unknown'}} | Message #${{messageIndex + 1}}
+                        </div>
+                    </div>
+                ` : `
+                    <!-- No Per-Response Prompt Available -->
+                    <div style="margin-bottom: 1rem;">
+                        <div style="font-weight: bold; color: var(--warning-color); margin-bottom: 0.5rem;">⚠️ Per-Response Prompt Not Available</div>
+                        <div style="background: rgba(255, 214, 10, 0.1); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem; border: 1px solid var(--warning-color); text-align: center;">
+                            Per-response prompt reconstruction failed or not available for this message.
+                        </div>
+                    </div>
+                `;
+
                 modal.innerHTML = `
                     <div class="analyze-content">
-                        <h3 style="color: var(--matrix-green); margin-bottom: 1rem;">🔍 Assistant Response Analysis</h3>
-                        
+                        <h3 style="color: var(--matrix-green); margin-bottom: 1rem;">🔍 Assistant Response Analysis - Message #${{messageIndex + 1}}</h3>
+
                         <div style="display: grid; gap: 1.5rem;">
                             <!-- Response Metrics -->
                             <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--accent-color);">
@@ -1202,7 +1284,7 @@ async def session_deep_dive(
                                     <div>Est. Tokens: <span style="color: var(--matrix-green);">~${{Math.ceil(messageText.length / 4)}}</span></div>
                                 </div>
                             </div>
-                            
+
                             <!-- Response Characteristics -->
                             <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--warning-color);">
                                 <div style="font-weight: bold; color: var(--warning-color); margin-bottom: 0.5rem;">🎯 Response Characteristics</div>
@@ -1213,27 +1295,22 @@ async def session_deep_dive(
                                     • Contains questions: ${{hasQuestions ? 'Yes' : 'No'}}
                                 </div>
                             </div>
-                            
-                            <!-- Prompt Context -->
-                            <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--primary-color); max-height: 400px; overflow-y: auto;">
-                                <div style="font-weight: bold; color: var(--primary-color); margin-bottom: 1rem;">🧠 Context Used</div>
-                                
+
+                            <!-- Per-Response Prompt Context -->
+                            <div style="background: var(--code-bg); padding: 1rem; border-radius: 0.5rem; border-left: 4px solid var(--matrix-green); max-height: 500px; overflow-y: auto;">
+                                <div style="font-weight: bold; color: var(--matrix-green); margin-bottom: 1rem;">🧠 Prompt Used for This Response</div>
+
+                                ${{perResponsePromptSection}}
+
                                 <div style="margin-bottom: 1rem;">
-                                    <div style="font-weight: bold; color: var(--accent-color); margin-bottom: 0.5rem;">📚 Persistent Memory</div>
+                                    <div style="font-weight: bold; color: var(--accent-color); margin-bottom: 0.5rem;">📚 Persistent Memory (Reference)</div>
                                     <div style="background: rgba(0, 0, 0, 0.3); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem; max-height: 100px; overflow-y: auto; font-family: 'Courier New', monospace; white-space: pre-wrap;">
                                         ${{persistentMemory}}
                                     </div>
                                 </div>
-                                
-                                <div style="margin-bottom: 1rem;">
-                                    <div style="font-weight: bold; color: var(--warning-color); margin-bottom: 0.5rem;">💭 Session Memory</div>
-                                    <div style="background: rgba(0, 0, 0, 0.3); padding: 0.75rem; border-radius: 0.375rem; font-size: 0.8rem; max-height: 100px; overflow-y: auto; font-family: 'Courier New', monospace; white-space: pre-wrap;">
-                                        ${{sessionMemory}}
-                                    </div>
-                                </div>
                             </div>
                         </div>
-                        
+
                         <div style="text-align: center; margin-top: 1.5rem;">
                             <button onclick="closeAnalyzeModal()" style="background: var(--primary-color); color: white; border: none; padding: 0.5rem 1rem; border-radius: 0.375rem; cursor: pointer; font-weight: 500;">
                                 Close Analysis
@@ -1241,7 +1318,7 @@ async def session_deep_dive(
                         </div>
                     </div>
                 `;
-                
+
                 modal.style.display = 'flex';
             }}
 
