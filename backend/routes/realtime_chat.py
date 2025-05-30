@@ -641,6 +641,23 @@ TOOL USAGE STRATEGY: Balanced
             self.ws.close()
         self.connected = False
 
+def detect_summary_request(message_text: str) -> bool:
+    """Detect if user is requesting a conversation summary"""
+    summary_triggers = [
+        "summarize our conversation",
+        "summarize what we discussed", 
+        "give me a summary",
+        "summarize this conversation",
+        "create a summary",
+        "can you summarize",
+        "summarize what we talked about",
+        "sum up our chat",
+        "recap our conversation"
+    ]
+    
+    message_lower = message_text.lower().strip()
+    return any(trigger in message_lower for trigger in summary_triggers)
+
 @router.websocket("/api/realtime/chat")
 async def realtime_chat(websocket: WebSocket):
     await websocket.accept()
@@ -734,6 +751,48 @@ async def realtime_chat(websocket: WebSocket):
                             
                             if user_text:
                                 print(f"🖐️ User text message: {user_text[:100]}")
+                            
+                                # CHECK FOR SUMMARY REQUEST FIRST
+                                if detect_summary_request(user_text):
+                                    print(f"🎯 SUMMARY REQUEST DETECTED from {user_uuid}")
+                                
+                                    # Import here to avoid circular imports
+                                    from memory.session_memory import force_session_summary
+                                
+                                    # Force the summary
+                                    success = force_session_summary(user_uuid, "user_requested_mid_session")
+                                
+                                    if success:
+                                        # Send confirmation back to user via OpenAI assistant
+                                        confirmation_message = "I've created a summary of our conversation and stored it in your persistent memory."
+                                    
+                                        # Create a system message to make the assistant respond with confirmation
+                                        system_response = {
+                                            "type": "conversation.item.create",
+                                            "item": {
+                                                "type": "message",
+                                                "role": "system",
+                                                "content": [{"type": "input_text", "text": f"Respond to the user with this exact message: '{confirmation_message}'"}]
+                                            }
+                                        }
+                                        openai_client.send_message(json.dumps(system_response))
+                                        print(f"✅ User-triggered summary completed for {user_uuid}")
+                                    
+                                        # Skip the rest of processing for this message
+                                        continue
+                                    else:
+                                        # Send error message
+                                        error_message = "I wasn't able to create a summary right now. There might not be enough conversation content yet."
+                                        error_response = {
+                                            "type": "conversation.item.create",
+                                            "item": {
+                                                "type": "message",
+                                                "role": "system",
+                                                "content": [{"type": "input_text", "text": f"Respond to the user with this exact message: '{error_message}'"}]
+                                            }
+                                        }
+                                        openai_client.send_message(json.dumps(error_response))
+                                        continue
                                 
                                 # Only inject RAG if strategy allows it
                                 if openai_client.current_strategy != "none":
@@ -801,40 +860,12 @@ async def realtime_chat(websocket: WebSocket):
     finally:
         # Remove from session manager
         await session_manager.remove_voice_session(user_uuid)
-
         print(f"🧹 CLEANUP STARTED: user_uuid={user_uuid}")
-    
-        # FORCE auto-summarization on disconnect (more aggressive approach)
-        if user_uuid and user_uuid.strip():  # Extra validation
-            try:
-                print(f"🤖 DISCONNECT SUMMARIZATION: Starting for {user_uuid}")
-            
-                # Import here to avoid circular imports
-                from memory.session_memory import get_session_memory_size, summarize_and_archive_session
-            
-                # Check if there's anything to summarize
-                current_size = get_session_memory_size(user_uuid)
-                print(f"📊 CURRENT SESSION SIZE: {current_size} chars")
-            
-                if current_size > 100:  # Only summarize if we have substantial content
-                    print(f"📝 FORCING SUMMARIZATION (disconnect) for {user_uuid}")
-                    summarize_and_archive_session(user_uuid, "auto_disconnect")
-                
-                    # Verify it worked
-                    final_size = get_session_memory_size(user_uuid)
-                    print(f"📊 FINAL SESSION SIZE: {final_size} chars")
-                
-                    if final_size == 0:
-                        print(f"✅ DISCONNECT SUMMARIZATION SUCCESS for {user_uuid}")
-                    else:
-                        print(f"⚠️ DISCONNECT SUMMARIZATION INCOMPLETE for {user_uuid}")
-                else:
-                    print(f"⏭️ SKIPPING SUMMARIZATION: Too little content ({current_size} chars)")
-                
-            except Exception as e:
-                print(f"❌ DISCONNECT SUMMARIZATION FAILED for {user_uuid}: {e}")
-                import traceback
-                traceback.print_exc()
+
+        # FORCE auto-summarization on disconnect
+        if user_uuid and user_uuid.strip():
+            from memory.session_memory import force_session_summary
+            force_session_summary(user_uuid, "auto_disconnect")
         else:
             print("⚠️ CLEANUP: No valid user_uuid for summarization")
     

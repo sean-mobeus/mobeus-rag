@@ -69,7 +69,7 @@ app.include_router(openai_realtime_tokens.router)
 app.include_router(main_dashboard_router, prefix="/admin")      # /admin/ (main dashboard)
 app.include_router(debug_dashboard_router, prefix="/admin")     # /admin/debug
 app.include_router(config_dashboard_router, prefix="/admin")    # /admin/config
-app.include_router(session_dashboard_router, prefix="/admin")   # /admin/session
+app.include_router(session_dashboard_router, prefix="/admin")   # /admin/sessions
 app.include_router(tools_dashboard_router, prefix="/admin")      # /admin/tools
 
 
