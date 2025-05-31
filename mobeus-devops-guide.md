@@ -120,6 +120,18 @@ server {
     listen 80;
     server_name localhost;
 
+    # Chat endpoints (WebSocket and HTTP) to backend
+    location /chat/ {
+        proxy_pass http://backend:8010/chat/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # API routes to backend
     location /api/ {
         proxy_pass http://backend:8010/api/;
@@ -177,6 +189,18 @@ server {
     ssl_certificate /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
 
+    # Chat endpoints (WebSocket and HTTP) to backend
+    location /chat/ {
+        proxy_pass http://backend:8010/chat/;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
     # API routes to backend
     location /api/ {
         proxy_pass http://backend:8010/api/;
@@ -223,35 +247,53 @@ server {
 
 ---
 
-## ✅ Local Development Workflow
+## ✅ Local Development (two workflows)
+
+You can develop locally either with Docker‑based static serving (via nginx) or with the Vite dev server (HMR).
+
+### Option 1: Docker‑based local dev (static SPA + nginx)
 
 ```bash
-# Start development environment
+# Build frontend production assets for nginx
+cd frontend
+npm install
+npm run build
+cd ..
+
+# Start services (nginx, backend, database, etc.)
 docker-compose up -d
 
-# Check services
+# Inspect as needed
 docker-compose ps
-
-# View logs
 docker-compose logs nginx
 docker-compose logs backend
-
-# Access your app through nginx (mirrors production)
-open http://localhost:8080        # Main app
-open http://localhost:8088        # Admin dashboard
 ```
 
-### Local Access Points (via nginx):
+Open in browser:
+- Main App:          http://localhost:8080
+- Admin Dashboard:   http://localhost:8088
+- API:               http://localhost:8080/api/
 
-- **Main App**: http://localhost:8080
-- **Admin Dashboard**: http://localhost:8088
-- **API**: http://localhost:8080/api/
-- **Frontend Dev**: http://localhost:5173 (direct Vite server)
+### Option 2: Vite dev server (fast HMR, no nginx)
 
-### Direct Backend Access (debugging):
+```bash
+# Start backend services (database, Redis, etc.) without nginx
+docker-compose up -d backend db redis
 
-- **Backend API**: http://localhost:8010/api/
-- **Backend Admin**: http://localhost:8010/admin/
+# Launch FastAPI on port 8010
+uvicorn backend.main:app --reload --port 8010
+
+# From the frontend directory, set your backend URL and start Vite
+export VITE_BACKEND_BASE_URL=http://localhost:8010
+cd frontend
+npm install
+npm run dev
+```
+
+Open in browser:
+- Frontend (Vite dev server):  http://localhost:5173
+- API:                         http://localhost:8010/api/
+- Admin UI:                    http://localhost:8010/admin/
 
 ---
 

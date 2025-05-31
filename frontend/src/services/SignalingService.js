@@ -1,3 +1,5 @@
+import { BACKEND_BASE_URL } from "../config.js";
+
 /**
  * WebRTC Signaling Service
  *
@@ -7,8 +9,10 @@
 class SignalingService {
   constructor(config = {}) {
     // Configuration
+    const wsProtocol = BACKEND_BASE_URL.startsWith("https") ? "wss" : "ws";
+    const host = BACKEND_BASE_URL.replace(/^https?:\/\//, "");
     this.config = {
-      serverUrl: "/api/webrtc",
+      serverUrl: config.serverUrl || `${wsProtocol}://${host}/api/webrtc`,
       reconnectInterval: 5000,
       maxReconnectAttempts: 5,
       ...config,

@@ -1,12 +1,12 @@
 // frontend/src/App.jsx
 import React from "react";
 
-import OpenAIRealtimeAssistant from "./components/OpenAIRealtimeAssistant.jsx";
+import RealtimeAssistant from "./components/RealtimeAssistant.jsx";
 
 function App() {
   return (
     <div className="App">
-      <OpenAIRealtimeAssistant />
+      <RealtimeAssistant />
     </div>
   );
 }

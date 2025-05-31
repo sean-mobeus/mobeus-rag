@@ -1,4 +1,6 @@
 // Simple EventEmitter implementation for browser
+import { BACKEND_BASE_URL } from "../config.js";
+
 class EventEmitter {
   constructor() {
     this.events = {};
@@ -26,7 +28,7 @@ class EventEmitter {
  * WebSocket-based client for OpenAI Realtime API via backend relay
  * Handles audio input/output through the browser while using WebSocket for communication
  */
-class WebSocketRealtimeClient extends EventEmitter {
+class RealtimeClient extends EventEmitter {
   constructor() {
     super();
 
@@ -56,8 +58,8 @@ class WebSocketRealtimeClient extends EventEmitter {
     // User context
     this.userUuid = null;
 
-    // Backend URL
-    this.backendUrl = window.location.origin;
+    // Backend base URL (from env or default)
+    this.backendUrl = BACKEND_BASE_URL;
 
     // Tool strategy tracking
     this.currentStrategy = "auto";
@@ -140,9 +142,8 @@ class WebSocketRealtimeClient extends EventEmitter {
 
       // Connect to backend WebSocket
       const protocol = this.backendUrl.startsWith("https") ? "wss" : "ws";
-      const url = `${protocol}://${
-        window.location.host
-      }/api/realtime/chat?user_uuid=${encodeURIComponent(
+      const backendHost = new URL(this.backendUrl).host;
+      const url = `${protocol}://${backendHost}/chat/realtime?user_uuid=${encodeURIComponent(
         userUuid || ""
       )}&instructions=${encodeURIComponent(
         instructions || ""
@@ -627,14 +628,14 @@ class WebSocketRealtimeClient extends EventEmitter {
    * Get strategy information
    */
   getStrategyInfo(strategy) {
-    return WebSocketRealtimeClient.TOOL_STRATEGIES[strategy] || null;
+    return RealtimeClient.TOOL_STRATEGIES[strategy] || null;
   }
 
   /**
    * Get available strategies
    */
   getAvailableStrategies() {
-    return WebSocketRealtimeClient.TOOL_STRATEGIES;
+    return RealtimeClient.TOOL_STRATEGIES;
   }
 
   /** Queue audio chunk for smooth playback */
@@ -750,4 +751,4 @@ class WebSocketRealtimeClient extends EventEmitter {
   }
 }
 
-export default new WebSocketRealtimeClient();
+export default new RealtimeClient();

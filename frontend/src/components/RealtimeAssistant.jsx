@@ -1,13 +1,14 @@
-// frontend/src/components/OpenAIRealtimeAssistant.jsx
+// frontend/src/components/RealtimeAssistant.jsx
 import React, { useState, useEffect, useRef } from "react";
-import webSocketRealtimeClient from "./WebSocketRealtimeClient";
+import webSocketRealtimeClient from "./RealtimeClient";
+import { BACKEND_BASE_URL } from "../config.js";
 
 /**
- * OpenAI Realtime Voice Assistant - Polished UI
+ * Realtime Voice Assistant - Polished UI
  *
  * Clean, modern interface with chat bubbles and central microphone
  */
-export default function OpenAIRealtimeAssistant() {
+export default function RealtimeAssistant() {
   // State
   const [connected, setConnected] = useState(false);
   const [connecting, setConnecting] = useState(false);
@@ -388,9 +389,9 @@ export default function OpenAIRealtimeAssistant() {
     console.log("🔍 User UUID:", userUuid);
 
     try {
-      console.log("📤 Sending request to /api/clear-memory");
+      console.log(`📤 Sending request to ${BACKEND_BASE_URL}/api/clear-memory`);
 
-      const response = await fetch("/api/clear-memory", {
+      const response = await fetch(`${BACKEND_BASE_URL}/api/clear-memory`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ uuid: userUuid, query: "" }),
