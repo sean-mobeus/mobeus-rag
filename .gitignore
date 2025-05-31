@@ -1,11 +1,11 @@
 __pycache__/
 .env
 chroma/
+logs/*.jsonl
+
 debug_log.jsonl
 rag_debug_fresh.jsonl
-logs/rag_debug.jsonl
-logs/actual_prompts.jsonl
-logs/summarization_events.jsonl
+
 
 nginx/nginx.conf
 nginx/dev.conf
@@ -19,3 +19,4 @@ actual_prompts.json
 vite.config.js
 .DS_Store
 node_modules/docker.compose.override.yml
+backend/logs/*.jsonl
