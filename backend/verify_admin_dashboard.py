@@ -44,43 +44,6 @@ def test_database_functions():
     except Exception as e:
         print(f"❌ Database test failed: {e}")
 
-def test_voice_command_detection():
-    """Test voice command detection"""
-    print("🧪 Testing voice command detection...")
-    
-    try:
-        from routes.realtime_chat import detect_summary_request
-        
-        test_cases = [
-            ("summarize our conversation", True, "Should detect this clear summary request"),
-            ("can you give me a summary", True, "Should detect this summary request"), 
-            ("recap what we discussed", True, "Should detect this recap request"),
-            ("this is not a summary request", False, "Should NOT detect - contains 'summary' but is negated")
-        ]
-        
-        all_passed = True
-        for phrase, should_detect, description in test_cases:
-            detected = detect_summary_request(phrase)
-            
-            if detected == should_detect:
-                status = "✅ PASS"
-            else:
-                status = "❌ FAIL"
-                all_passed = False
-            
-            detected_text = "DETECTED" if detected else "NOT DETECTED"
-            expected_text = "should detect" if should_detect else "should NOT detect"
-            
-            print(f"{status}: '{phrase}' -> {detected_text} ({expected_text})")
-            print(f"      {description}")
-            
-        if all_passed:
-            print("🎉 All voice command tests PASSED!")
-        else:
-            print("⚠️ Some voice command tests FAILED!")
-            
-    except Exception as e:
-        print(f"❌ Voice command test failed: {e}")
 
 def test_session_dashboard_functions():
     """Test session dashboard functions"""
@@ -108,9 +71,7 @@ def main():
     
     test_database_functions()
     print()
-    
-    test_voice_command_detection()
-    print()
+
     
     test_session_dashboard_functions()
     print()

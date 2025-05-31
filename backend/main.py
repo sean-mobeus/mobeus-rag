@@ -12,7 +12,6 @@ from vector.rag import query_rag
 import traceback
 from typing import Optional
 from io import BytesIO
-from routes import speak_stream
 from chat import streaming_rag
 from routes import user_identity_routes
 from chat import openai_realtime_tokens
@@ -60,7 +59,6 @@ app.add_middleware(
 
 # Include existing routes
 app.include_router(realtime_chat.router)
-app.include_router(speak_stream.router)
 app.include_router(streaming_rag.router)
 app.include_router(user_identity_routes.router)
 app.include_router(openai_realtime_tokens.router)
