@@ -9,7 +9,7 @@ from memory.session_memory import get_all_session_memory, get_memory_stats
 from memory.persistent_memory import append_to_summary, get_summary
 from memory.db import get_connection, execute_db_operation
 from pydantic import BaseModel
-import runtime_config
+from config import runtime_config
 from config import LOG_DIR
 
 router = APIRouter()

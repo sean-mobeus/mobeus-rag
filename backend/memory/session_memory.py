@@ -5,7 +5,7 @@ import os
 from datetime import datetime
 from typing import Optional, Dict, Any, List
 from memory.db import get_connection, execute_db_operation
-import runtime_config
+from config import runtime_config
 import json
 
 # Default summarization prompt

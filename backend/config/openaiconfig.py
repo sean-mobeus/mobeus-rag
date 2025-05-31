@@ -1,4 +1,4 @@
-# backend/config/openai_realtime_constants.py
+"""OpenAI Realtime API constants and supported parameters"""
 """
 OpenAI Realtime API constants and supported parameters
 """

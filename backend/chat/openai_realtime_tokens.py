@@ -12,8 +12,8 @@ class UpdateUserMemoryRequest(BaseModel):
     information: str
     user_uuid: str
 import httpx
-from config import OPENAI_API_KEY
-from openaiconfig.openai_realtime_constants import (
+from config.config import OPENAI_API_KEY
+from config.openaiconfig import (
     REALTIME_VOICES,
     REALTIME_MODELS,
     DEFAULT_REALTIME_CONFIG

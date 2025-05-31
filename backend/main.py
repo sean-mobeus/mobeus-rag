@@ -12,13 +12,18 @@ from vector.rag import query_rag
 import traceback
 from typing import Optional
 from io import BytesIO
-from chat import streaming_rag
-from routes import user_identity_routes
+from routes.chat_routes import router as chat_router
+from routes.memory_routes import router as memory_router
+from routes.audio_routes import router as audio_router
+from routes.video_routes import router as video_router
+from routes.rag_routes import router as rag_router
+from routes.speech_routes import router as speech_router
+from routes.stats_routes import router as stats_router
 from chat import openai_realtime_tokens
-from routes import realtime_chat
+from routes import user_identity_routes
 from memory.session_memory import log_interaction
 import logging
-import runtime_config
+from config import runtime_config
 
 # Enable dashboards
 from stats.debug_dashboard import router as debug_dashboard_router
@@ -57,11 +62,18 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include existing routes
-app.include_router(realtime_chat.router)
-app.include_router(streaming_rag.router)
-app.include_router(user_identity_routes.router)
+# Include service routers
+app.include_router(chat_router, prefix="/chat")
+app.include_router(memory_router, prefix="/memory")
+app.include_router(audio_router, prefix="/audio")
+app.include_router(video_router, prefix="/video")
+app.include_router(rag_router, prefix="/rag")
+app.include_router(speech_router, prefix="/speech")
+app.include_router(stats_router, prefix="/stats")
+
+# Include legacy routes for backwards compatibility
 app.include_router(openai_realtime_tokens.router)
+app.include_router(user_identity_routes.router)
 
 # Enable dashboards with /admin prefix
 app.include_router(main_dashboard_router, prefix="/admin")      # /admin/ (main dashboard)

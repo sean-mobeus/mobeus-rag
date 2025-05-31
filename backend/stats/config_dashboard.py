@@ -5,12 +5,12 @@ from typing import Optional
 import os
 import json
 from pathlib import Path
-import runtime_config
+from config import runtime_config
 # Import default summary prompt for session memory
 from memory.session_memory import get_summary_prompt
-from openaiconfig.openai_realtime_constants import (
-    REALTIME_VOICES, 
-    REALTIME_MODELS, 
+from config.openaiconfig import (
+    REALTIME_VOICES,
+    REALTIME_MODELS,
     REALTIME_AUDIO_FORMATS,
     DEFAULT_REALTIME_CONFIG
 )
