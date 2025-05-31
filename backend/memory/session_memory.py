@@ -132,7 +132,7 @@ def log_summarization_event(uuid: str, event_type: str, details: Optional[dict] 
     """Log summarization events for dashboard visibility - now to both file AND database"""
     
     # File logging (keep existing behavior)
-    with open("summarization_events.jsonl", "a") as f:
+    with open("logs/summarization_events.jsonl", "a") as f:
         entry = {
             "timestamp": datetime.now().isoformat(),
             "user_uuid": uuid,

@@ -3,13 +3,19 @@ __pycache__/
 chroma/
 debug_log.jsonl
 rag_debug_fresh.jsonl
+logs/rag_debug.jsonl
+logs/actual_prompts.jsonl
+logs/summarization_events.jsonl
+
 nginx/nginx.conf
-docker-compose.override.yml
 nginx/dev.conf
 nginx/zz_dev.conf
+docker-compose.override.yml
+
+actual_prompts.json
+~$ Sprint 3 Kickoff.docx
 
 # Ignore frontend dev files
 vite.config.js
-frontend/
 .DS_Store
-node_modules/
+node_modules/docker.compose.override.yml
