@@ -12,6 +12,7 @@ from vector.rag import query_rag
 import traceback
 from typing import Optional
 from io import BytesIO
+from audio.provider import OpenAITTSProvider
 from routes.chat_routes import router as chat_router
 from routes.memory_routes import router as memory_router
 from routes.audio_routes import router as audio_router
@@ -121,6 +122,16 @@ async def speak_text(payload: SpeakRequest):
     except Exception as e:
         print(f"❌ TTS error: {e}")
         return {"error": str(e)}
+
+@app.get("/api/speak-stream")
+async def speak_stream(text: str, voice: Optional[str] = None):
+    """Streaming TTS endpoint for audioElement playback."""
+    try:
+        provider = OpenAITTSProvider()
+        audio_gen = provider.stream(text, voice)
+        return StreamingResponse(audio_gen, media_type="audio/mpeg")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Keep this for non-realtime RAG queries if needed
 @app.post("/api/query")

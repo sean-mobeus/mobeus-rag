@@ -14,6 +14,8 @@ docker-compose.override.yml
 
 actual_prompts.json
 ~$ Sprint 3 Kickoff.docx
+backend/old_realtime_chat.py
+backend/old_main.py
 
 # Ignore frontend dev files
 vite.config.js
