@@ -4,50 +4,41 @@ This document provides a high-level overview of the project directory layout and
 
 ```
 .
-├── backend/                   # Python FastAPI backend service
+├── backend/                   # Python FastAPI backend (modular services & refactor guide)
 ├── frontend/                  # Vite-based single-page application client
-├── nginx/                     # Nginx reverse proxy configuration (multiple confs)
+├── nginx/                     # Nginx reverse proxy configuration (HTTP & HTTPS)
 ├── php/                       # Sample/test PHP scripts
 ├── chroma/                    # Chroma vector DB data (auto-generated)
-├── docs/                      # Project documentation (Word docs, JSONL configs)
-├── mobeus/                    # Python package stub (module initialization)
+├── docs/                      # Project documentation (Word docs, JSONL configs, developer guides)
+├── init-db/                   # Database initialization scripts
+├── logs/                      # Application logs and debugging artifacts
+├── tests/                     # Automated tests (pytest)
+├── mobeus-devops-guide.md     # DevOps and Docker setup guide
 ├── docker-compose.yml         # Docker Compose orchestration for services
 ├── docker-compose.override.yml# Optional local development overrides
 ├── deployment-checklist.md    # Deployment checklist and environment setup
-├── Sprint 3 Kickoff.docx      # Sprint planning kickoff document
-└── [misc files]               # Debug logs, audio samples, temporary assets
+├── PROJECT_STRUCTURE.md       # This project structure guide
+└── [misc files]               # .env, debug scripts, assets, etc.
 ```
 
 ---
 
 ## backend/
-- **main.py**             FastAPI app entrypoint, registers routes and middleware.
-- **config.py**           Static and environment configuration.
-- **runtime_config.py**   Runtime configuration loader (handles dynamic settings).
-- **vector/**             Vector storage utilities and RAG logic.
-  - *rag.py*              Retrieval-Augmented Generation implementation.
-  - **ingest/**           Utilities for populating the vector store.
-    - *chunk_and_ingest.py*   Splits source documents into chunks and ingests them.
-    - *ingest_tone.py*        Custom ingestion for tone-shaper data.
-- **memory/**             Session and persistent memory management modules.
-  - *session_memory.py*     In-memory session-scoped memory for conversation state.
-  - *persistent_memory.py*  Persistent memory storage across sessions.
-  - *user_identity.py*      User identity and profile handling.
-- **chat/**               Chat pipeline and realtime communication.
-  - **agents/**           Prompt orchestration and tone shaping.
-  - *streaming_rag.py*    Streaming RAG endpoint.
-  - *openai_realtime_tokens.py*  Realtime session helpers.
-  - *webrtc_signaling.py* WebRTC signaling implementation.
-- **routes/**             Miscellaneous FastAPI router modules.
-  - *speak_stream.py*         TTS streaming endpoint.
-  - *user_identity_routes.py* User identity REST endpoints.
-- **stats/**              Dashboards for runtime configuration and debugging.
-  - *config_dashboard.py* UI & API for runtime config.
-  - *debug_dashboard.py*  Debug logs and metrics dashboard.
-- **tts/**                Text-to-speech implementation.
-  - *streaming.py*          Uses OpenAI TTS APIs.
-- **requirements.txt**    Python dependencies.
-- **Dockerfile**          Backend service container build.
+- **main.py**               FastAPI application entry point; registers routes and middleware.
+- **refactor_guide.md**     Guide to modularize and refactor the monolithic backend.
+- **requirements.txt**      Python dependencies.
+- **Dockerfile**            Backend service container build.
+- **config/**               Configuration management (runtime and environment settings).
+- **routes/**               FastAPI routers delegating to service modules.
+- **chat/**                 Chat orchestration, multi-agent logic, and tone control.
+- **memory/**               Conversation context storage and persistent memory.
+- **audio/**                Audio streaming and processing abstractions.
+- **video/**                Video ingestion and processing (stubs and future features).
+- **rag/**                  Retrieval-Augmented Generation (vector store client & retriever).
+- **vector/**               Chunking and embedding logic for Retrieval-Augmented Generation.
+- **voice_commands/**       Speech recognition and voice-command handling.
+- **stats/**                Analytics, metrics collection, and dashboard APIs.
+- **scripts/**              Utility scripts (DB init, test pipelines, logs setup).
 
 ## frontend/
 - **README.md**           Frontend setup and development guide.
@@ -77,10 +68,11 @@ This document provides a high-level overview of the project directory layout and
   typically not checked into version control.
 
 ## docs/
-- **Mobeus_Complete_Overview_Expanded_Fixed.docx**  Detailed project overview.
-- **Mobeus_Knowledge_Base.docx**                   Domain knowledge base.
-- **mobeus-source-content.docx**                   Source content for ingestion.
-- **tone_shaper.jsonl**                            JSONL config for tone shaping.
+**technical_documentation.md** Developer-focused technical documentation with high-level summary introduction.
+**Mobeus_Complete_Overview_Expanded_Fixed.docx**  Detailed project overview.
+**Mobeus_Knowledge_Base.docx**                   Domain knowledge base.
+**mobeus-source-content.docx**                   Source content for ingestion.
+**tone_shaper.jsonl**                            JSONL config for tone shaping.
 
 ## mobeus/
 - **__init__.py**         Python package initialization (currently stub).

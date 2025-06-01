@@ -278,14 +278,14 @@ Open in browser:
 ### Option 2: Vite dev server (fast HMR, no nginx)
 
 ```bash
-# Start backend services (database, Redis, etc.) without nginx
-docker-compose up -d backend db redis
+# Start backend and database services without nginx
+docker-compose up -d backend postgres
 
 # Launch FastAPI on port 8010
 uvicorn backend.main:app --reload --port 8010
 
 # From the frontend directory, set your backend URL and start Vite
-export VITE_BACKEND_BASE_URL=http://localhost:8010
+export VITE_API_BASE=http://localhost:8010
 cd frontend
 npm install
 npm run dev
