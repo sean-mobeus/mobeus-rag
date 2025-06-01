@@ -31,6 +31,7 @@ export default function RealtimeAssistant() {
   );
 
   const [isClearing, setIsClearing] = useState(false);
+  const [sessionData, setSessionData] = useState(null);
 
   // Audio visualization
   const [audioLevels, setAudioLevels] = useState([]);
@@ -129,6 +130,26 @@ export default function RealtimeAssistant() {
     }
 
     setListening(true);
+
+    try {
+      const resMem = await fetch(
+        `${BACKEND_BASE_URL}/memory/session/${userUuid}`
+      );
+      if (resMem.ok) {
+        const data = await resMem.json();
+        console.log("📥 Loaded session memory:", data);
+        setSessionData(data);
+      } else {
+        console.error(
+          "❌ Failed to load session memory:",
+          resMem.status,
+          await resMem.text()
+        );
+      }
+    } catch (e) {
+      console.error("❌ Error fetching session memory:", e);
+      showToast(`Error fetching memory: ${e.message}`, "error");
+    }
   }
 
   const handleDisconnected = () => {
@@ -389,12 +410,12 @@ export default function RealtimeAssistant() {
     console.log("🔍 User UUID:", userUuid);
 
     try {
-      console.log(`📤 Sending request to ${BACKEND_BASE_URL}/api/clear-memory`);
+      console.log(`📤 Sending request to ${BACKEND_BASE_URL}/memory/clear`);
 
-      const response = await fetch(`${BACKEND_BASE_URL}/api/clear-memory`, {
+      const response = await fetch(`${BACKEND_BASE_URL}/memory/clear`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ uuid: userUuid, query: "" }),
+        body: JSON.stringify({ uuid: userUuid }),
       });
 
       console.log("📥 Response status:", response.status);
@@ -428,6 +449,31 @@ export default function RealtimeAssistant() {
     } catch (error) {
       console.error("❌ Clear memory error:", error);
       showToast(`Failed to clear memory: ${error.message}`, "error");
+    }
+  };
+
+  const handleAppendSummary = async () => {
+    const info = window.prompt(
+      "Enter information to append to memory summary:"
+    );
+    if (!info) return;
+    try {
+      const res = await fetch(
+        `${BACKEND_BASE_URL}/memory/summary`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ uuid: userUuid, info }),
+        }
+      );
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Status ${res.status}: ${errText}`);
+      }
+      showToast("Memory summary updated", "success");
+    } catch (error) {
+      console.error("❌ Append summary error:", error);
+      showToast(`Error appending summary: ${error.message}`, "error");
     }
   };
 
@@ -518,6 +564,7 @@ export default function RealtimeAssistant() {
           </div>
         )}
 
+
         {/* Center - Microphone & Controls */}
         <div className="w-64 flex flex-col items-center justify-center p-4 bg-white border-x border-gray-200">
           {/* Control Buttons */}
@@ -545,6 +592,14 @@ export default function RealtimeAssistant() {
                 <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6" />
                 <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
               </svg>
+            </button>
+
+            <button
+              onClick={handleAppendSummary}
+              className="p-2 rounded-full text-gray-500 hover:text-blue-500 hover:bg-blue-50 transition-colors"
+              title="Append to memory summary"
+            >
+              📑
             </button>
 
             {/* Toggle Messages Button */}

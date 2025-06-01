@@ -791,7 +791,7 @@ async def tools_dashboard(
         // Initialize dashboard WebSocket connection
         function initializeDashboardWebSocket() {{
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${{protocol}}//${{window.location.host}}/api/admin/dashboard`;
+            const wsUrl = `${{protocol}}//${{window.location.host}}/chat/admin/dashboard`;
     
             console.log('🔗 Connecting dashboard WebSocket:', wsUrl);
     

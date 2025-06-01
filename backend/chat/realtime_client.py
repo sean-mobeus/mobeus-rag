@@ -12,8 +12,7 @@ import websocket
 import config.runtime_config as runtime_config
 from config import OPENAI_API_KEY
 from vector.rag import log_debug, retrieve_documents
-from memory.persistent_memory import append_to_summary, get_summary
-from memory.session_memory import get_all_session_memory
+from memory.client import MemoryClient
 from stats.tools_dashboard import log_strategy_change, TOOL_STRATEGIES
 
 
@@ -33,6 +32,8 @@ class OpenAIWebSocketClient:
         # Queues for communication between threads
         self.incoming_queue = queue.Queue()
         self.outgoing_queue = queue.Queue()
+
+        self.memory = MemoryClient()
 
         # Track RAG injection to prevent duplicates
         self.last_rag_injection_id: Optional[str] = None
@@ -179,11 +180,11 @@ TOOL USAGE STRATEGY: Balanced
 
         persistent_summary = ""
         if self.user_uuid:
-            persistent_summary = get_summary(self.user_uuid)
+            persistent_summary = self.memory.get_summary(self.user_uuid) or ""
             if persistent_summary:
                 context_parts.append(f"User Background:\n{persistent_summary}")
 
-            session_memory = get_all_session_memory(self.user_uuid)
+            session_memory = self.memory.get_session(self.user_uuid)
             if session_memory:
                 conversation_context = []
                 total_chars = 0
@@ -201,7 +202,9 @@ TOOL USAGE STRATEGY: Balanced
                         break
 
                 if conversation_context:
-                    context_parts.append("Recent Conversation:\n" + "\n".join(conversation_context))
+                    context_parts.append(
+                        "Recent Conversation:\n" + "\n".join(conversation_context)
+                    )
 
         base_instructions = runtime_config.get("SYSTEM_PROMPT", "").format(tone_style=tone_style)
         enhanced_instructions = self.get_enhanced_instructions(base_instructions, self.current_strategy)
@@ -256,7 +259,14 @@ TOOL USAGE STRATEGY: Balanced
                         "parameters": {
                             "type": "object",
                             "properties": {
-                                "query": {"type": "string", "description": "Search query to find relevant Mobeus information"}
+                                "query": {
+                                    "type": "string",
+                                    "description": "Search query to find relevant Mobeus information"
+                                },
+                                "k": {
+                                    "type": "integer",
+                                    "description": "Number of top results to return from the knowledge base (overrides default RAG_RESULT_COUNT)"
+                                }
                             },
                             "required": ["query"]
                         }
@@ -281,8 +291,6 @@ TOOL USAGE STRATEGY: Balanced
         print(f"📤 Session config sent: model={realtime_model}, strategy={self.current_strategy}, tool_choice={tool_choice}")
 
         try:
-            from memory.session_memory import store_session_prompt
-
             prompt_data = {
                 'system_prompt': base_instructions,
                 'persistent_summary': persistent_summary if self.user_uuid else "",
@@ -295,7 +303,7 @@ TOOL USAGE STRATEGY: Balanced
             }
 
             if self.user_uuid:
-                store_session_prompt(self.user_uuid, prompt_data)
+                self.memory.store_prompt(self.user_uuid, prompt_data)
                 print(f"✅ Stored prompt data for {self.user_uuid}: {len(full_instructions)} chars")
         except Exception as e:
             print(f"⚠️ Failed to store prompt data: {e}")
@@ -314,12 +322,14 @@ TOOL USAGE STRATEGY: Balanced
                         if detect_summary_request(transcript):
                             print(f"🎯 VOICE COMMAND DETECTED in audio: {transcript}")
 
-                            from memory.session_memory import force_session_summary
-
-                            success = force_session_summary(self.user_uuid, "user_requested_voice_audio")
+                            success = self.memory.force_session_summary(
+                                self.user_uuid, "user_requested_voice_audio"
+                            )
 
                             if success:
-                                print(f"✅ Voice audio command success for {self.user_uuid}")
+                                print(
+                                    f"✅ Voice audio command success for {self.user_uuid}"
+                                )
                                 confirmation_message = "I've created a summary of our conversation and stored it in your persistent memory. You can continue our conversation and I'll remember the key points from what we discussed."
 
                                 system_response = {
@@ -358,8 +368,7 @@ TOOL USAGE STRATEGY: Balanced
 
                                 return
 
-                        from memory.session_memory import log_interaction
-                        log_interaction(self.user_uuid, "user", transcript)
+                        self.memory.log_interaction(self.user_uuid, "user", transcript)
 
                 elif msg_type == "conversation.item.created":
                     item = data.get("item", {})
@@ -376,21 +385,20 @@ TOOL USAGE STRATEGY: Balanced
                             if content:
                                 print(f"💬 Logging user text: {content[:100]}...")
 
-                                if detect_summary_request(content):
-                                    print(f"🎯 VOICE COMMAND in text message: '{content}'")
+                            if detect_summary_request(content):
+                                print(f"🎯 VOICE COMMAND in text message: '{content}'")
 
-                                    from memory.session_memory import force_session_summary
+                                success = self.memory.force_session_summary(
+                                    self.user_uuid, "user_requested_text"
+                                )
 
-                                    success = force_session_summary(self.user_uuid, "user_requested_text")
+                                if success:
+                                    print(f"✅ Text voice command success for {self.user_uuid}")
+                                    return
+                                else:
+                                    print(f"❌ Text voice command failed for {self.user_uuid}")
 
-                                    if success:
-                                        print(f"✅ Text voice command success for {self.user_uuid}")
-                                        return
-                                    else:
-                                        print(f"❌ Text voice command failed for {self.user_uuid}")
-
-                                from memory.session_memory import log_interaction
-                                log_interaction(self.user_uuid, "user", content)
+                            self.memory.log_interaction(self.user_uuid, "user", content)
 
                         elif role == "assistant":
                             content = ""
@@ -401,15 +409,13 @@ TOOL USAGE STRATEGY: Balanced
 
                             if content:
                                 print(f"💬 Logging assistant message: {content[:100]}...")
-                                from memory.session_memory import log_interaction
-                                log_interaction(self.user_uuid, "assistant", content)
+                            self.memory.log_interaction(self.user_uuid, "assistant", content)
 
                 elif msg_type == "response.audio_transcript.done":
                     transcript = data.get("transcript", "").strip()
                     if transcript:
                         print(f"💬 Logging assistant audio transcript: {transcript[:100]}...")
-                        from memory.session_memory import log_interaction
-                        log_interaction(self.user_uuid, "assistant", transcript)
+                        self.memory.log_interaction(self.user_uuid, "assistant", transcript)
 
             if msg_type == "response.function_call_arguments.done":
                 print(f"🔧 Function call: {data.get('name')}")
@@ -463,32 +469,81 @@ TOOL USAGE STRATEGY: Balanced
         try:
             function_name = data.get("name")
             arguments = data.get("arguments", {})
+            # parse JSON-encoded argument string if needed
+            if isinstance(arguments, str):
+                try:
+                    arguments = json.loads(arguments)
+                except json.JSONDecodeError:
+                    arguments = {}
             response = None
 
             if function_name == "search_knowledge_base":
+                # Handle OpenAI function call for RAG search
                 query = arguments.get("query", "")
                 if query:
-                    docs = retrieve_documents(query)
-                    response = {
-                        "type": "function.result",
-                        "name": function_name,
-                        "result": docs
+                    # Optional override for number of results
+                    k = arguments.get("k")
+                    docs = await retrieve_documents(query, k)
+                    call_id = data.get("call_id")
+                    # Send function call output back into the conversation
+                    response_event = {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": json.dumps(docs)
+                        }
                     }
+                    if self.ws and self.connected:
+                        self.ws.send(json.dumps(response_event))
+                        # Resume generation after function call
+                        create_resp = {
+                            "type": "response.create",
+                            "response": {"modalities": runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])}
+                        }
+                        self.ws.send(json.dumps(create_resp))
+                    return
             elif function_name == "update_user_memory":
+                # Handle user memory update function call
                 information = arguments.get("information", "")
                 if information and self.user_uuid:
-                    append_to_summary(self.user_uuid, information)
-                    response = {
-                        "type": "function.result",
-                        "name": function_name,
-                        "result": "User memory updated."
+                    self.memory.append_summary(self.user_uuid, information)
+                    call_id = data.get("call_id")
+                    response_event = {
+                        "type": "conversation.item.create",
+                        "item": {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": json.dumps("User memory updated.")
+                        }
                     }
+                    if self.ws and self.connected:
+                        self.ws.send(json.dumps(response_event))
+                        create_resp = {
+                            "type": "response.create",
+                            "response": {"modalities": runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])}
+                        }
+                        self.ws.send(json.dumps(create_resp))
+                    return
             else:
-                response = {
-                    "type": "function.result",
-                    "name": function_name,
-                    "result": f"Unknown function: {function_name}"
+                # Handle unknown function calls gracefully
+                call_id = data.get("call_id")
+                response_event = {
+                    "type": "conversation.item.create",
+                    "item": {
+                        "type": "function_call_output",
+                        "call_id": call_id,
+                        "output": json.dumps(f"Unknown function: {function_name}")
+                    }
                 }
+                if self.ws and self.connected:
+                    self.ws.send(json.dumps(response_event))
+                    create_resp = {
+                        "type": "response.create",
+                        "response": {"modalities": runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])}
+                    }
+                    self.ws.send(json.dumps(create_resp))
+                return
 
             if response and self.ws and self.connected:
                 self.ws.send(json.dumps(response))

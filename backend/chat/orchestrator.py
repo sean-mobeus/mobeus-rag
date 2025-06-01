@@ -8,14 +8,17 @@ import os
 import datetime
 
 from config import OPENAI_API_KEY
+import config.runtime_config as runtime_config
 from vector.rag import log_debug, retrieve_documents
-from memory.persistent_memory import append_to_summary
+from memory.client import MemoryClient
 from stats.tools_dashboard import log_strategy_change, TOOL_STRATEGIES
 from chat.realtime_client import OpenAIWebSocketClient, detect_summary_request
 
 
 logging.basicConfig(level=logging.DEBUG)
 print("🖐️  LOADED /app/routes/realtime_chat.py")
+
+memory_client = MemoryClient()
 
 # Disable low-level websocket-client trace logs to avoid audio data spam
 # websocket.enableTrace(False)
@@ -194,7 +197,7 @@ async def execute_tool(name: str, args: dict, user_uuid: Optional[str]):
         uuid = args.get("user_uuid") or user_uuid
         if not isinstance(uuid, str) or not uuid:
             return {"error": "Missing or invalid user_uuid"}
-        append_to_summary(uuid, args.get("information", ""))
+        memory_client.append_summary(uuid, args.get("information", ""))
         return {"success": True}
         
     return {"error": f"Unknown tool {name}"}
@@ -303,11 +306,9 @@ async def realtime_chat(websocket: WebSocket):
                                 if detect_summary_request(user_text):
                                     print(f"🎯 SUMMARY REQUEST DETECTED from {user_uuid}")
                                 
-                                    # Import here to avoid circular imports
-                                    from memory.session_memory import force_session_summary
-                                
-                                    # Force the summary
-                                    success = force_session_summary(user_uuid, "user_requested_mid_session")
+                                    success = memory_client.force_session_summary(
+                                        user_uuid, "user_requested_mid_session"
+                                    )
                                 
                                     if success:
                                         # Send confirmation back to user via OpenAI assistant
@@ -345,22 +346,29 @@ async def realtime_chat(websocket: WebSocket):
                                 if openai_client.current_strategy != "none":
                                     import hashlib
                                     message_id = hashlib.md5(f"{user_text}{len(user_text)}".encode()).hexdigest()
-                                
+
                                     if message_id != openai_client.last_rag_injection_id:
                                         openai_client.last_rag_injection_id = message_id
-                                    
+
                                         try:
-                                            docs = await retrieve_documents(user_text)
+                                            # Retrieve configured number of top documents
+                                            top_k = runtime_config.get("RAG_RESULT_COUNT")
+                                            docs = await retrieve_documents(user_text, top_k)
                                             print(f"🔍 Retrieved {len(docs)} docs for user query (strategy: {openai_client.current_strategy})")
-                                        
+
                                             if docs:
-                                                docs_text = "\n\n---\n\n".join([d.get("text", "") for d in docs[:3]])
+                                                docs_text = "\n\n---\n\n".join(d.get("text", "") for d in docs)
                                                 sys_event = {
                                                     "type": "conversation.item.create",
                                                     "item": {
                                                         "type": "message",
                                                         "role": "system",
-                                                        "content": [{"type": "input_text", "text": f"Relevant Information from Mobeus knowledge base:\n{docs_text}"}]
+                                                        "content": [
+                                                            {
+                                                                "type": "input_text",
+                                                                "text": f"Relevant Information from Mobeus knowledge base:\n{docs_text}"
+                                                            }
+                                                        ]
                                                     }
                                                 }
                                                 sys_msg = json.dumps(sys_event)
@@ -410,10 +418,9 @@ async def realtime_chat(websocket: WebSocket):
 
         # FORCE auto-summarization on disconnect
         if user_uuid and user_uuid.strip():
-            from memory.session_memory import force_session_summary
-            force_session_summary(user_uuid, "auto_disconnect")
+            memory_client.force_session_summary(user_uuid, "auto_disconnect")
         else:
-            print("⚠️ CLEANUP: No valid user_uuid for summarization") 
+            print("⚠️ CLEANUP: No valid user_uuid for summarization")
     
     # Close OpenAI client
     if openai_client:

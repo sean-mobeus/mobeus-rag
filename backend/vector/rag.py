@@ -178,8 +178,16 @@ def query_rag(query: str, uuid: str) -> dict:
         "memory_stats": memory_stats
     }
 
-async def retrieve_documents(query: str):
-    results = collection.query(query_texts=[query], n_results=5)
+async def retrieve_documents(query: str, n_results: int | None = None):
+    # Determine number of results from runtime config if not specified
+    if n_results is None:
+        # Read default RAG result count from runtime config
+        n_results = runtime_config.get("RAG_RESULT_COUNT", 5)
+    # Ensure n_results is always an int and not None
+    if n_results is None:
+        raise ValueError("n_results cannot be None")
+    n_results = int(n_results)
+    results = collection.query(query_texts=[query], n_results=n_results)
     documents = results.get("documents")
     texts = documents[0] if documents and len(documents) > 0 and documents[0] is not None else []
     metadatas_list = results.get("metadatas")
