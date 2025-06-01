@@ -128,7 +128,8 @@ async def speak_stream(text: str, voice: Optional[str] = None):
     """Streaming TTS endpoint for audioElement playback."""
     try:
         provider = OpenAITTSProvider()
-        audio_gen = provider.stream(text, voice)
+        selected_voice = voice if voice is not None else runtime_config.get("TTS_VOICE", "nova")
+        audio_gen = provider.stream(text, selected_voice)
         return StreamingResponse(audio_gen, media_type="audio/mpeg")
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -167,7 +168,7 @@ async def list_routes():
 @app.get("/debug/chroma-info")
 async def debug_chroma_info():
     """Debug ChromaDB collection contents"""
-    from vector.rag import collection
+    from rag.retriever import collection
     try:
         count = collection.count()
         sample_results = collection.get(limit=5)
@@ -187,7 +188,7 @@ async def debug_chroma_info():
 @app.get("/debug/test-search")
 async def debug_test_search(q: str = "Mobeus"):
     """Test ChromaDB search directly"""
-    from vector.rag import collection
+    from rag.retriever import collection
     try:
         results = collection.query(query_texts=[q], n_results=5)
         

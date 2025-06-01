@@ -104,10 +104,20 @@
  4. Validate retrieval workflows (e.g., run `test-rag.sh` against new routes).
 
  ### Phase 6: Stats & Monitoring
- 1. Extract analytics and stats‑collection code from `stats/` and any mixed routes.
- 2. Implement `stats/collector.py` to centralize metric logging.
- 3. Update `stats_routes.py` to provide stats endpoints.
- 4. Verify dashboard and stats APIs for expected metrics.
+1. Extract analytics and stats‑collection calls (e.g. `log_strategy_change`, function‑call analytics) from mixed service modules into `stats/collector.py`.
+2. Implement `stats/collector.py` with functions to log and retrieve metrics:
+   - `log_strategy_change(user_uuid, old_strategy, new_strategy)`
+   - `get_function_calls(limit, filter_query)`
+   - `get_strategy_changes(limit)`
+   - `analyze_function_calls(function_calls)`
+   - `generate_sample_function_calls(count)`
+3. Update `stats_routes.py` to expose JSON endpoints under `/stats`:
+   - `GET /stats/function_calls`
+   - `GET /stats/strategy_changes`
+   - `GET /stats/analysis`
+   - `GET /stats/data`
+4. Adjust dashboard modules (`stats/tools_dashboard.py`) to import collector methods and remove inline stats code, keeping dashboards focused on UI.
+5. Verify both admin dashboards (`/admin/tools`) and stats API (`/stats/*`) return expected metrics.
 
  ### Phase 7: Video Service (Future)
  1. Create `video/processor.py` with basic scaffolding.

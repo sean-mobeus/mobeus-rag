@@ -270,9 +270,10 @@ docker-compose logs backend
 ```
 
 Open in browser:
-- Main App:          http://localhost:8080
-- Admin Dashboard:   http://localhost:8088
-- API:               http://localhost:8080/api/
+
+- Main App: http://localhost:8080
+- Admin Dashboard: http://localhost:8088
+- API: http://localhost:8080/api/
 
 ### Option 2: Vite dev server (fast HMR, no nginx)
 
@@ -291,9 +292,10 @@ npm run dev
 ```
 
 Open in browser:
-- Frontend (Vite dev server):  http://localhost:5173
-- API:                         http://localhost:8010/api/
-- Admin UI:                    http://localhost:8010/admin/
+
+- Frontend (Vite dev server): http://localhost:5173
+- API: http://localhost:8010/api/
+- Admin UI: http://localhost:8010/admin/
 
 ---
 
