@@ -12,7 +12,8 @@ import config.runtime_config as runtime_config
 from vector.rag import log_debug, retrieve_documents
 from memory.client import MemoryClient
 from stats.tools_dashboard import log_strategy_change, TOOL_STRATEGIES
-from chat.realtime_client import OpenAIWebSocketClient, detect_summary_request
+from chat.realtime_client import OpenAIWebSocketClient
+from voice_commands.commands import handle_summary_request
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -302,46 +303,16 @@ async def realtime_chat(websocket: WebSocket):
                             if user_text:
                                 print(f"🖐️ User text message: {user_text[:100]}")
                             
-                                # CHECK FOR SUMMARY REQUEST FIRST
-                                if detect_summary_request(user_text):
-                                    print(f"🎯 SUMMARY REQUEST DETECTED from {user_uuid}")
-                                
-                                    success = memory_client.force_session_summary(
-                                        user_uuid, "user_requested_mid_session"
-                                    )
-                                
-                                    if success:
-                                        # Send confirmation back to user via OpenAI assistant
-                                        confirmation_message = "I've created a summary of our conversation and stored it in your persistent memory."
-                                    
-                                        # Create a system message to make the assistant respond with confirmation
-                                        system_response = {
-                                            "type": "conversation.item.create",
-                                            "item": {
-                                                "type": "message",
-                                                "role": "system",
-                                                "content": [{"type": "input_text", "text": f"Respond to the user with this exact message: '{confirmation_message}'"}]
-                                            }
-                                        }
-                                        openai_client.send_message(json.dumps(system_response))
-                                        print(f"✅ User-triggered summary completed for {user_uuid}")
-                                    
-                                        # Skip the rest of processing for this message
-                                        continue
-                                    else:
-                                        # Send error message
-                                        error_message = "I wasn't able to create a summary right now. There might not be enough conversation content yet."
-                                        error_response = {
-                                            "type": "conversation.item.create",
-                                            "item": {
-                                                "type": "message",
-                                                "role": "system",
-                                                "content": [{"type": "input_text", "text": f"Respond to the user with this exact message: '{error_message}'"}]
-                                            }
-                                        }
-                                        openai_client.send_message(json.dumps(error_response))
-                                        continue
-                                
+                                # Handle voice command for mid-session summary
+                                if handle_summary_request(
+                                    user_text,
+                                    memory_client,
+                                    user_uuid,
+                                    send_json=lambda msg: openai_client.send_message(json.dumps(msg)),
+                                    modalities=runtime_config.get("REALTIME_MODALITIES", ["text", "audio"]),
+                                ):
+                                    continue
+
                                 # Only inject RAG if strategy allows it
                                 if openai_client.current_strategy != "none":
                                     import hashlib

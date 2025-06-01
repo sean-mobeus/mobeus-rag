@@ -14,6 +14,7 @@ from config import OPENAI_API_KEY
 from vector.rag import log_debug, retrieve_documents
 from memory.client import MemoryClient
 from stats.tools_dashboard import log_strategy_change, TOOL_STRATEGIES
+from voice_commands.commands import detect_summary_request
 
 
 class OpenAIWebSocketClient:
@@ -549,41 +550,3 @@ TOOL USAGE STRATEGY: Balanced
                 self.ws.send(json.dumps(response))
         except Exception as e:
             print(f"❌ Error in handle_function_call: {e}")
-
-def detect_summary_request(message_text: str) -> bool:
-    """
-    Enhanced detection of user requesting conversation summary with comprehensive logging
-    """
-    if not message_text or not isinstance(message_text, str):
-        return False
-
-    summary_triggers = [
-        "summarize our conversation",
-        "summarize what we discussed", 
-        "give me a summary",
-        "summarize this conversation",
-        "create a summary",
-        "can you summarize",
-        "summarize what we talked about",
-        "sum up our chat",
-        "recap our conversation",
-        "make a summary",
-        "provide a summary",
-        "conversation summary",
-        "recap what we discussed",
-        "sum up what we said",
-        "give me a recap"
-    ]
-
-    message_lower = message_text.lower().strip()
-
-    for trigger in summary_triggers:
-        if trigger in message_lower:
-            print(f"🎯 VOICE COMMAND DETECTED: '{trigger}' in message: '{message_text[:100]}...'")
-            return True
-
-    summary_keywords = ["summary", "summarize", "recap", "sum up"]
-    if any(keyword in message_lower for keyword in summary_keywords):
-        print(f"🔍 POTENTIAL SUMMARY REQUEST (not triggered): '{message_text[:100]}...'")
-
-    return False

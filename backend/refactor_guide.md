@@ -25,7 +25,7 @@
  │   ├── __init__.py
  │   ├── client.py              # Vector store client & ingestion
  │   └── retriever.py           # Query & retrieval logic
- ├── speech_recognition/        # Voice‑to‑text & turn detection
+├── voice_commands/            # Voice commands, turn detection, and speech-to-text
  │   ├── __init__.py
  │   └── recognizer.py          # Speech recognition helpers
  ├── stats/                     # Analytics, usage metrics, dashboards
@@ -38,7 +38,7 @@
  │   ├── audio_routes.py
  │   ├── video_routes.py
  │   ├── rag_routes.py
- │   ├── speech_routes.py
+ │   ├── voice_commands_routes.py
  │   └── stats_routes.py
  ├── config/                    # Configuration management
  │   ├── __init__.py
@@ -58,7 +58,7 @@
  - **audio**: Real‑time audio streaming, provider abstraction (e.g., OpenAI, alternatives).
  - **video**: Video ingestion and processing (future feature).
  - **rag**: Vector store ingestion, retrieval logic for RAG pipelines.
- - **speech_recognition**: Voice‑to‑text, turn detection, audio preprocessing.
+- **voice_commands**: Voice commands, turn detection, and speech-to-text processing.
  - **stats**: Metrics collection, logging, analytics dashboards.
 
  ## 3. Refactoring Plan (Step‑by‑Step)
@@ -72,7 +72,7 @@
 
  ### Phase 1: Routing Layer Extraction
  1. In `routes/`, create stub route files for each service (see structure above).
- 2. Replace `realtime_chat.py` with `chat_routes.py`, `speech_routes.py`, and `audio_routes.py` that import from the new service modules.
+2. Replace `realtime_chat.py` with `chat_routes.py`, `voice_commands_routes.py`, and `audio_routes.py` that import from the new service modules.
  3. Refactor `main.py` to `include_router` for each service router.
  4. Run the app and ensure endpoints return minimal responses or placeholders.
 
@@ -83,12 +83,12 @@
  4. Update `routes/chat_routes.py` imports and calls accordingly.
  5. Test chat endpoints end‑to‑end.
 
- ### Phase 3: Speech Recognition & Audio
- 1. Locate voice‑to‑text and turn detection code in `realtime_chat.py`.
- 2. Extract those pieces into `speech_recognition/recognizer.py`.
- 3. Extract streaming logic into `audio/streaming.py` and provider abstraction in `audio/provider.py`.
- 4. Connect `speech_routes.py` and `audio_routes.py` to the new modules.
- 5. Validate audio/speech workflows with sample audio.
+### Phase 3: Voice Commands & Audio
+1. Locate voice‑to‑text, turn detection, and voice command logic in `orchestrator.py` and `realtime_client.py`.
+2. Extract speech recognition into `voice_commands/recognizer.py` and command detection into `voice_commands/commands.py`.
+3. Extract streaming logic into `audio/streaming.py` and provider abstraction in `audio/provider.py`.
+4. Connect `voice_commands_routes.py` and `audio_routes.py` to the new modules.
+5. Validate audio, speech, and voice command workflows with sample audio.
 
  ### Phase 4: Memory Service
  1. Identify in‑memory or database context code in `memory/` or in `routes` files.

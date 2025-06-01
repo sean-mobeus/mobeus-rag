@@ -1,11 +1,11 @@
 from fastapi import APIRouter, UploadFile, File, WebSocket, WebSocketDisconnect
-from speech_recognition.recognizer import WhisperRecognizer
+from voice_commands.recognizer import WhisperRecognizer
 
 router = APIRouter()
 
 @router.get("/health")
 async def health_check():
-    return {"service": "speech_recognition", "status": "healthy"}
+    return {"service": "voice_commands", "status": "healthy"}
 
 
 @router.post("/transcribe")

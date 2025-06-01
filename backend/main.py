@@ -18,7 +18,7 @@ from routes.memory_routes import router as memory_router
 from routes.audio_routes import router as audio_router
 from routes.video_routes import router as video_router
 from routes.rag_routes import router as rag_router
-from routes.speech_routes import router as speech_router
+from routes.voice_commands_routes import router as voice_commands_router
 from routes.stats_routes import router as stats_router
 from chat import openai_realtime_tokens
 from routes import user_identity_routes
@@ -69,7 +69,7 @@ app.include_router(memory_router, prefix="/memory")
 app.include_router(audio_router, prefix="/audio")
 app.include_router(video_router, prefix="/video")
 app.include_router(rag_router, prefix="/rag")
-app.include_router(speech_router, prefix="/speech")
+app.include_router(voice_commands_router, prefix="/voice_commands")
 app.include_router(stats_router, prefix="/stats")
 
 # Include legacy routes for backwards compatibility

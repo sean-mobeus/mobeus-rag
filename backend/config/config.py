@@ -3,6 +3,10 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+# If the OpenAI key is set but Chroma's embedding key is not, alias it
+if os.getenv("OPENAI_API_KEY") and not os.getenv("CHROMA_OPENAI_API_KEY"):
+    os.environ["CHROMA_OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+
 # Determine if running in Docker based on environment
 IN_DOCKER = os.getenv("MOBEUS_DEBUG") == "true"
 
