@@ -91,12 +91,14 @@ def query_rag(query: str, uuid: str) -> dict:
     tone_style = runtime_config.get("TONE_STYLE", "empathetic")
     
     print(f"🎛️ Using RAG config: {rag_result_count} results, temp={rag_temperature}, model={gpt_model}")
-    
-    # Get vector results using config
+
+    # Retrieve vector results using config and measure retrieval latency
+    retrieval_start = time.time()
     results = collection.query(
-        query_texts=[query], 
+        query_texts=[query],
         n_results=rag_result_count  # Now configurable!
     )
+    retrieval_time = time.time() - retrieval_start
     
     # Build context using new memory system
     context_parts = []
@@ -137,6 +139,8 @@ def query_rag(query: str, uuid: str) -> dict:
     system_message = tone_prompts.get(tone_style, tone_prompts["empathetic"])
     
     # Call OpenAI with config values
+    # Call OpenAI completion and measure completion latency
+    openai_start = time.time()
     response = openai_client.chat.completions.create(
         model=gpt_model,  # Configurable model
         messages=[
@@ -145,11 +149,23 @@ def query_rag(query: str, uuid: str) -> dict:
         ],
         temperature=rag_temperature  # Configurable temperature
     )
+    openai_time = time.time() - openai_start
     
     answer = response.choices[0].message.content
     
     # Get memory stats for debugging
     memory_stats = get_memory_stats(uuid)
+
+    # Log this query, its chunks, answer, and timing info to the debug log
+    timings = {
+        "retrieval_time": retrieval_time,
+        "openai_time": openai_time,
+        "total_time": retrieval_time + openai_time
+    }
+    chunks = []
+    if results and results.get("documents") and results["documents"][0]:
+        chunks = results["documents"][0]
+    log_debug(query, chunks, answer, timings)
 
     def safe_get_sources(results):
         """Safely extract sources from ChromaDB results"""

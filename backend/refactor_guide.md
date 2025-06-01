@@ -57,8 +57,9 @@
  - **memory**: Persistent conversation context, embeddings store, caching.
  - **audio**: Real‑time audio streaming, provider abstraction (e.g., OpenAI, alternatives).
  - **video**: Video ingestion and processing (future feature).
- - **rag**: Vector store ingestion, retrieval logic for RAG pipelines.
-- **voice_commands**: Voice commands, turn detection, and speech-to-text processing.
+ - **rag**: Query and retrieval logic for RAG (vector store lookups).
+ - **vector**: Document chunking and ingestion pipelines for managing the vector store.
+ - **voice_commands**: Voice commands, turn detection, and speech-to-text processing.
  - **stats**: Metrics collection, logging, analytics dashboards.
 
  ## 3. Refactoring Plan (Step‑by‑Step)
@@ -97,9 +98,9 @@
  4. Run memory‑related endpoints/tests to verify persistence.
 
  ### Phase 5: RAG/Vector Service
- 1. Move vector ingestion scripts from `vector/ingest` into `rag/client.py`.
- 2. Consolidate retrieval logic in `rag/retriever.py`.
- 3. Update `rag_routes.py` to expose ingestion and retrieval endpoints.
+ 1. Move the retrieval logic file from `vector/rag.py` into `rag/retriever.py`.
+ 2. Keep chunking and ingestion scripts under `vector/ingest/` for future document ingestion.
+ 3. Update `rag_routes.py` to expose retrieval (and ingestion, if desired) endpoints.
  4. Validate retrieval workflows (e.g., run `test-rag.sh` against new routes).
 
  ### Phase 6: Stats & Monitoring

@@ -8,7 +8,7 @@ import datetime
 from openai import OpenAI
 from config import OPENAI_API_KEY
 from pydantic import BaseModel
-from vector.rag import query_rag
+from rag.retriever import query_rag
 import traceback
 from typing import Optional
 from io import BytesIO

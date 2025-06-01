@@ -11,7 +11,7 @@ import websocket
 
 import config.runtime_config as runtime_config
 from config import OPENAI_API_KEY
-from vector.rag import log_debug, retrieve_documents
+from rag.retriever import log_debug, retrieve_documents
 from memory.client import MemoryClient
 from stats.tools_dashboard import log_strategy_change, TOOL_STRATEGIES
 from voice_commands.commands import detect_summary_request

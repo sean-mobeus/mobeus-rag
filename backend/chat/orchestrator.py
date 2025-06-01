@@ -9,7 +9,7 @@ import datetime
 
 from config import OPENAI_API_KEY
 import config.runtime_config as runtime_config
-from vector.rag import log_debug, retrieve_documents
+from rag.retriever import log_debug, retrieve_documents
 from memory.client import MemoryClient
 from stats.tools_dashboard import log_strategy_change, TOOL_STRATEGIES
 from chat.realtime_client import OpenAIWebSocketClient
