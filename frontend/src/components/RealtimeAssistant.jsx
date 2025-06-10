@@ -25,7 +25,6 @@ export default function RealtimeAssistant() {
   const [videoUrl, setVideoUrl] = useState(null);
   const [videoMode, setVideoMode] = useState(false);
   const [videoLatency, setVideoLatency] = useState(null);
-  const [didMode, setDidMode] = useState("text"); // 'text' or 'audio'
 
   // User state
   const [userName, setUserName] = useState(
@@ -49,7 +48,6 @@ export default function RealtimeAssistant() {
   const clientRef = useRef(webSocketRealtimeClient);
   const videoRef = useRef(null);
   const videoModeRef = useRef(videoMode);
-  const didModeRef = useRef(didMode);
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -653,89 +651,6 @@ export default function RealtimeAssistant() {
                 <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
               </svg>
             </button>
-            {/* Video Mode Toggle */}
-            <button
-              onClick={() => {
-                const newMode = !videoMode;
-                setVideoMode(newMode);
-
-                console.log("🎬 Video toggle clicked:", {
-                  connected,
-                  newMode,
-                  didMode,
-                  clientAvailable: !!webSocketRealtimeClient,
-                });
-
-                // Send mode to backend
-                if (connected) {
-                  webSocketRealtimeClient.sendEvent({
-                    type: "update_video_mode",
-                    enabled: newMode,
-                    audio_mode: didMode, // Also send whether to use audio or text
-                  });
-                } else {
-                  console.log("❌ Not connected, can't send update");
-                }
-              }}
-              className={`p-2 rounded-full transition-colors ${
-                videoMode
-                  ? "text-blue-500 bg-blue-50"
-                  : "text-gray-500 hover:text-blue-500 hover:bg-blue-50"
-              }`}
-              title={videoMode ? "Disable video mode" : "Enable video mode"}
-            >
-              <svg
-                width="16"
-                height="16"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-              >
-                <polygon points="23 7 16 12 23 17 23 7"></polygon>
-                <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
-              </svg>
-            </button>
-            {/* D-ID Mode Toggle (only show when video mode is on) */}
-            {videoMode && (
-              <button
-                onClick={() => {
-                  const newDidMode = didMode === "text" ? "audio" : "text";
-                  setDidMode(newDidMode);
-
-                  console.log("🎬 Sending video mode update:", {
-                    enabled: videoMode,
-                    audio_mode: newDidMode,
-                  });
-
-                  // Update backend
-                  if (connected) {
-                    webSocketRealtimeClient.sendEvent({
-                      type: "update_video_mode",
-                      enabled: videoMode,
-                      audio_mode: newDidMode,
-                    });
-                  }
-
-                  showToast(
-                    `Video mode: ${
-                      newDidMode === "text"
-                        ? "Fast (text)"
-                        : "Voice preserved (audio)"
-                    }`,
-                    "info"
-                  );
-                }}
-                className="p-2 rounded-full text-gray-500 hover:text-purple-500 hover:bg-purple-50 transition-colors"
-                title={`Current: ${
-                  didMode === "text"
-                    ? "Fast text mode"
-                    : "Audio mode (preserves voice)"
-                }`}
-              >
-                {didMode === "text" ? "T" : "A"}
-              </button>
-            )}
 
             <button
               onClick={handleAppendSummary}

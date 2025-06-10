@@ -220,10 +220,7 @@ TOOL USAGE STRATEGY: Balanced
         realtime_model = runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
         realtime_voice = runtime_config.get("REALTIME_VOICE", "alloy")
         temperature = runtime_config.get("TEMPERATURE", 0.7)
-        if self.video_mode:
-            modalities = ["text"]  # Text only for fast D-ID
-        else:
-            modalities = runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])
+        modalities = ["text"]
         audio_format = runtime_config.get("REALTIME_AUDIO_FORMAT", "pcm16")
         turn_detection_type = runtime_config.get("TURN_DETECTION_TYPE", "server_vad")
         turn_detection_threshold = runtime_config.get("TURN_DETECTION_THRESHOLD", 0.5)

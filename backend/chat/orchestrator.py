@@ -15,7 +15,6 @@ from stats.collector import log_strategy_change
 from stats.tools_dashboard import TOOL_STRATEGIES
 from chat.realtime_client import OpenAIWebSocketClient
 from voice_commands.commands import handle_summary_request
-from video.processor import get_did_video_processor
 
 
 logging.basicConfig(level=logging.DEBUG)
@@ -36,21 +35,7 @@ class SessionManager:
         self.voice_sessions: Dict[str, WebSocket] = {}  # user_uuid -> websocket
         self.dashboard_sessions: Set[WebSocket] = set()  # dashboard connections
         self.session_strategies: Dict[str, str] = {}  # user_uuid -> current strategy
-        self.session_audio_chunks: Dict[str, List[str]] = {}
         self.session_video_mode: Dict[str, bool] = {}  # user_uuid -> video enabled
-        self.session_did_mode: Dict[str, str] = {}  # user_uuid -> 'text' or 'audio'
-        
-    def add_audio_chunk(self, user_uuid: str, chunk: str):
-        """Add audio chunk for a session"""
-        if user_uuid not in self.session_audio_chunks:
-            self.session_audio_chunks[user_uuid] = []
-        self.session_audio_chunks[user_uuid].append(chunk)
-        
-    def get_and_clear_audio_chunks(self, user_uuid: str) -> List[str]:
-        """Get all audio chunks for a session and clear them"""
-        chunks = self.session_audio_chunks.get(user_uuid, [])
-        self.session_audio_chunks[user_uuid] = []
-        return chunks
         
     async def add_voice_session(self, user_uuid: str, websocket: WebSocket, initial_strategy: str = "auto"):
         """Add a voice session to the manager"""
@@ -236,7 +221,6 @@ async def realtime_chat(websocket: WebSocket):
             
         # Create client with user UUID for memory integration and strategy support
         initial_video_mode = session_manager.session_video_mode.get(user_uuid, False)
-        initial_did_mode = session_manager.session_did_mode.get(user_uuid, "text")
         openai_client = OpenAIWebSocketClient(
             api_key=OPENAI_API_KEY,
             user_uuid=user_uuid,
@@ -271,52 +255,8 @@ async def realtime_chat(websocket: WebSocket):
                         parsed_msg = json.loads(msg)
                         msg_type = parsed_msg.get("type")
 
-                        if session_manager.session_video_mode.get(user_uuid, False):
-                            print(f"🔍 VIDEO MODE EVENT: {msg_type}")
-                        
-                        # Debug log
-                        if msg_type in ["response.text.done", "response.audio.done"]:
-                            print(f"🔍 DEBUG: Message type: {msg_type}")
-                            print(f"🔍 DEBUG: Video enabled for {user_uuid}: {session_manager.session_video_mode.get(user_uuid, False)}")
-                            print(f"🔍 DEBUG: Audio mode: {session_manager.session_did_mode.get(user_uuid, 'not set')}")
-
                         # Get session-specific settings
-                        video_enabled = session_manager.session_video_mode.get(user_uuid, False)
-                        use_audio = session_manager.session_did_mode.get(user_uuid, "text") == "audio"
-
-                        # Debug logging for all response types
-                        if msg_type in ["response.text.done", "response.audio.done", "response.audio_transcript.done"]:
-                            print(f"🎬 D-ID Check: msg_type={msg_type}, video_enabled={video_enabled}, use_audio={use_audio}")
-                            
-                            # Handle text completion for video mode (when using text-only modality)
-                            if video_enabled and not use_audio and msg_type == "response.text.done":
-                                text = parsed_msg.get("text", "")
-                                if text:
-                                    print(f"🎬 Got text response: {text[:50]}...")
-                                    asyncio.create_task(
-                                        generate_did_video_from_text(websocket, text, user_uuid)
-                                    )
-                            
-                            # For text mode, we might need to capture from audio transcript
-                            elif video_enabled and not use_audio and msg_type == "response.audio_transcript.done":
-                                transcript = parsed_msg.get("transcript", "")
-                                print(f"🎬 Got text completion (FAST): {transcript[:50]}...")
-                                if transcript and not transcript.startswith('{"'):
-                                    print(f"🎬 Got audio transcript for text mode: {transcript[:50]}...")
-                                    asyncio.create_task(
-                                        generate_did_video_from_text(websocket, transcript, user_uuid)
-                                    )
-                                else:
-                                    print(f"🎬 Skipping function call transcript: {transcript[:30]}...")
-
-                        # Collect audio chunks if video mode is enabled
-                        if (video_enabled and use_audio and
-                            msg_type == "response.audio.delta"):
-                            
-                            audio_chunk = parsed_msg.get("delta") or parsed_msg.get("audio")
-                            if audio_chunk:
-                                print(f"🎵 Collecting audio chunk for D-ID")
-                                session_manager.add_audio_chunk(user_uuid, audio_chunk)
+                        video_enabled = session_manager.session_video_mode.get(user_uuid, False)             
                                 
                     except json.JSONDecodeError:
                         pass  # Not JSON, just forward
@@ -437,24 +377,19 @@ async def realtime_chat(websocket: WebSocket):
                     # Handle video mode updates
                     elif msg_type == "update_video_mode":
                         enabled = msg.get("enabled", False)
-                        audio_mode = msg.get("audio_mode", "text")
                         
                         session_manager.session_video_mode[user_uuid] = enabled
-                        session_manager.session_did_mode[user_uuid] = audio_mode
+
+                        
+                        print(f"🎬 Video stream enabled for {user_uuid}: {enabled}")
 
                         if openai_client:
                             openai_client.update_video_mode(enabled)
                         
-                        print(f"🎬 Video mode updated for {user_uuid}: enabled={enabled}, mode={audio_mode}")
-
-                        if openai_client:
-                            openai_client.update_video_mode(enabled, use_audio=(audio_mode == "audio"))
-                        
                         # Acknowledge the update
                         await websocket.send_json({
                             "type": "video_mode_updated",
-                            "enabled": enabled,
-                            "audio_mode": audio_mode
+                            "enabled": enabled
                         })
                         continue
 
@@ -533,127 +468,6 @@ def log_token_usage(user_uuid: str, input_tokens: int, output_tokens: int, model
             "estimated_cost": calculate_cost(input_tokens, output_tokens, model)
         }
         f.write(json.dumps(entry) + "\n")
-
-async def generate_did_video_from_text(websocket: WebSocket, text: str, user_uuid: str):
-    """Generate D-ID video from text and send URL to client"""
-    print(f"🎬 generate_did_video_from_text called with text: {text[:50]}...")
-    start_time = time.time()
-    
-    try:
-        async with get_did_video_processor() as processor:
-            # Generate a talk ID here so we can use it for webhook
-            import uuid
-            webhook_talk_id = f"tlk_{uuid.uuid4().hex[:12]}"
-            
-            # Create talk
-            create_start = time.time()
-            print(f"🎬 Calling D-ID API for text: {text[:30]}...")
-            talk_data = await processor.create_talk_from_text(
-                text=text,
-                voice_id=runtime_config.get("DID_VOICE_ID"),
-                voice_provider=runtime_config.get("DID_VOICE_PROVIDER"),
-                voice_style=runtime_config.get("DID_VOICE_STYLE"),
-                expression=runtime_config.get("DID_EXPRESSION"),
-                talk_id=webhook_talk_id  # Pass our webhook ID
-            )
-            
-            did_talk_id = talk_data["id"]  # D-ID's ID
-            webhook_talk_id = talk_data.get("webhook_talk_id", webhook_talk_id)  # Our webhook ID
-            create_time = time.time() - create_start
-            print(f"⏱️ D-ID talk created in {create_time:.2f}s")
-            
-            # Poll for completion (will use webhook if available)
-            poll_start = time.time()
-            video_url = await processor.wait_for_talk_completion_with_webhook(
-                did_talk_id,  # D-ID's ID for polling fallback
-                webhook_talk_id,  # Our ID for webhook
-                max_retries=runtime_config.get("DID_MAX_POLL_TIME", 30),
-                delay=runtime_config.get("DID_POLL_INTERVAL", 1.0)
-            )
-            poll_time = time.time() - poll_start
-            
-            if video_url:
-                total_time = time.time() - start_time
-                
-                # Send video URL to client
-                await websocket.send_json({
-                    "type": "did_talk_generated",
-                    "video_url": video_url,
-                    "mode": "text",
-                    "latency": total_time,
-                    "talk_id": did_talk_id,
-                    "timing": {
-                        "create": create_time,
-                        "poll": poll_time,
-                        "total": total_time
-                    }
-                })
-                
-                print(f"🎬 D-ID video sent (text mode)")
-                print(f"⏱️ Timing: create={create_time:.2f}s, poll={poll_time:.2f}s, total={total_time:.2f}s")
-            else:
-                print(f"❌ D-ID video generation timed out")
-                
-    except Exception as e:
-        total_time = time.time() - start_time
-        print(f"❌ Error generating D-ID video from text after {total_time:.2f}s: {e}")
-        await websocket.send_json({
-            "type": "did_talk_error",
-            "error": str(e),
-            "mode": "text",
-            "latency": total_time
-        })
-
-
-async def generate_did_video_from_audio(websocket: WebSocket, audio_chunks: List[str], user_uuid: str):
-    """Generate D-ID video from audio chunks and send URL to client"""
-    try:
-        start_time = time.time()
-        
-        async with get_did_video_processor() as processor:
-            # Convert PCM to WAV
-            wav_base64 = processor.convert_pcm16_to_wav(audio_chunks)
-            
-            # Create talk
-            talk_data = await processor.create_talk_from_audio(
-                audio_base64=wav_base64,
-                expression=runtime_config.get("DID_EXPRESSION")
-
-            )
-            
-            talk_id = talk_data["id"]
-            
-            # Poll for completion
-            video_url = await processor.wait_for_talk_completion(
-                talk_id,
-                max_retries=runtime_config.get("DID_MAX_POLL_TIME", 30),
-                delay=runtime_config.get("DID_POLL_INTERVAL", 1.0)
-            )
-            
-            if video_url:
-                end_time = time.time()
-                latency = end_time - start_time
-                
-                # Send video URL to client
-                await websocket.send_json({
-                    "type": "did_talk_generated", 
-                    "video_url": video_url,
-                    "mode": "audio",
-                    "latency": latency,
-                    "talk_id": talk_id
-                })
-                
-                print(f"🎬 D-ID video sent to client (audio mode, latency: {latency:.2f}s)")
-            else:
-                print(f"❌ D-ID video generation timed out")
-                
-    except Exception as e:
-        print(f"❌ Error generating D-ID video from audio: {e}")
-        await websocket.send_json({
-            "type": "did_talk_error",
-            "error": str(e),
-            "mode": "audio"
-        })
 
 
 # Add dashboard WebSocket endpoint for real-time strategy control
