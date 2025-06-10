@@ -4,14 +4,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # If the OpenAI key is set but Chroma's embedding key is not, alias it
-if os.getenv("OPENAI_API_KEY") and not os.getenv("CHROMA_OPENAI_API_KEY"):
-    os.environ["CHROMA_OPENAI_API_KEY"] = os.getenv("OPENAI_API_KEY")
+openai_key = os.getenv("OPENAI_API_KEY")
+if openai_key and not os.getenv("CHROMA_OPENAI_API_KEY"):
+    os.environ["CHROMA_OPENAI_API_KEY"] = openai_key
 
 # Determine if running in Docker based on environment
 IN_DOCKER = os.getenv("MOBEUS_DEBUG") == "true"
 
 # OpenAI API Key
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+
+# D-ID API Key
+DID_API_KEY = os.getenv("DID_API_KEY")
+if DID_API_KEY and not DID_API_KEY.startswith("Basic "):
+    DID_API_KEY = DID_API_KEY
 
 # ChromaDB directory - path relative to application root (mounted at /app/chroma)
 CHROMA_DB_DIR = os.getenv("CHROMA_DB_DIR", "chroma")

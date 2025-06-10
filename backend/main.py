@@ -22,6 +22,7 @@ from routes.voice_commands_routes import router as voice_commands_router
 from routes.stats_routes import router as stats_router
 from chat import openai_realtime_tokens
 from routes import user_identity_routes
+from routes import webhooks
 from memory.session_memory import log_interaction
 import logging
 from config import runtime_config
@@ -71,6 +72,7 @@ app.include_router(video_router, prefix="/video")
 app.include_router(rag_router, prefix="/rag")
 app.include_router(voice_commands_router, prefix="/voice_commands")
 app.include_router(stats_router, prefix="/stats")
+app.include_router(webhooks.router)
 
 # Include legacy routes for backwards compatibility
 app.include_router(openai_realtime_tokens.router)

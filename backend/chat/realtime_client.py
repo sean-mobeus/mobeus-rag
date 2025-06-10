@@ -21,9 +21,10 @@ from voice_commands.commands import detect_summary_request
 class OpenAIWebSocketClient:
     """WebSocket client with tool strategy control"""
 
-    def __init__(self, api_key: str, user_uuid: str = "", initial_strategy: str = "auto"):
+    def __init__(self, api_key: str, user_uuid: str = "", initial_strategy: str = "auto", video_mode: bool = False):
         self.api_key = api_key
         self.user_uuid = user_uuid
+        self.video_mode = video_mode
         self.ws = None
         self.connected = False
 
@@ -73,6 +74,54 @@ class OpenAIWebSocketClient:
         else:
             print("⚠️ Cannot update strategy - not connected to OpenAI")
             return False
+
+    def update_video_mode(self, enabled: bool, use_audio: bool = False) -> bool:
+        """Update video mode and adjust system instructions."""
+        self.video_mode = enabled
+    
+        # If connected, send session update with new instructions and modalities
+        if self.ws and self.connected:
+            # Adjust modalities based on video mode
+            if enabled and not use_audio:
+                # Use text-only modalities for faster response
+                modalities = ["text"]
+            else:
+                # Use default modalities
+                modalities = runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])
+
+            # Re-generate instructions with video mode consideration
+            tone_style = runtime_config.get("TONE_STYLE", "empathetic")
+            base_instructions = runtime_config.get("SYSTEM_PROMPT", "").format(tone_style=tone_style)
+            enhanced_instructions = self.get_enhanced_instructions(base_instructions, self.current_strategy)
+        
+            # Add video mode instructions
+            if self.video_mode:
+                video_instructions = """
+
+    VIDEO MODE ACTIVE - CRITICAL INSTRUCTIONS:
+    - Keep ALL responses extremely concise (1-2 sentences maximum)
+    - Be direct and to the point - no elaboration
+    - Avoid greetings, pleasantries, or filler words
+    - Answer the core question immediately
+    - Do NOT ask follow-up questions unless critical
+    - Speak naturally but briefly, as if in a quick video call
+    - If you must use tools, summarize results in one sentence
+    - Example: Instead of "Hello! I'd be happy to help you with that. Let me search for information about..." just say "Checking Mobeus pricing now."
+    """
+                enhanced_instructions += video_instructions
+        
+            session_update = {
+                "type": "session.update", 
+                "session": {
+                    "instructions": enhanced_instructions,
+                    "modalities": modalities 
+                }
+            }
+        
+            self.ws.send(json.dumps(session_update))
+            print(f"🎬 Video mode updated: {enabled}")
+            return True
+        return False
 
     def get_tool_choice_for_strategy(self, strategy: str) -> str:
         """Convert strategy to OpenAI tool_choice parameter."""
@@ -171,7 +220,10 @@ TOOL USAGE STRATEGY: Balanced
         realtime_model = runtime_config.get("REALTIME_MODEL", "gpt-4o-realtime-preview-2024-12-17")
         realtime_voice = runtime_config.get("REALTIME_VOICE", "alloy")
         temperature = runtime_config.get("TEMPERATURE", 0.7)
-        modalities = runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])
+        if self.video_mode:
+            modalities = ["text"]  # Text only for fast D-ID
+        else:
+            modalities = runtime_config.get("REALTIME_MODALITIES", ["text", "audio"])
         audio_format = runtime_config.get("REALTIME_AUDIO_FORMAT", "pcm16")
         turn_detection_type = runtime_config.get("TURN_DETECTION_TYPE", "server_vad")
         turn_detection_threshold = runtime_config.get("TURN_DETECTION_THRESHOLD", 0.5)
@@ -210,6 +262,22 @@ TOOL USAGE STRATEGY: Balanced
 
         base_instructions = runtime_config.get("SYSTEM_PROMPT", "").format(tone_style=tone_style)
         enhanced_instructions = self.get_enhanced_instructions(base_instructions, self.current_strategy)
+
+        # Add video mode instructions if enabled
+        if self.video_mode:
+            video_instructions = """
+
+        VIDEO MODE ACTIVE - CRITICAL INSTRUCTIONS:
+        - Keep ALL responses extremely concise (1-2 sentences maximum)
+        - Be direct and to the point - no elaboration
+        - Avoid greetings, pleasantries, or filler words
+        - Answer the core question immediately
+        - Do NOT ask follow-up questions unless critical
+        - Speak naturally but briefly, as if in a quick video call
+        - If you must use tools, summarize results in one sentence
+        - Example: Instead of "Hello! I'd be happy to help you with that. Let me search for information about..." just say "Checking Mobeus pricing now."
+        """
+            enhanced_instructions += video_instructions
 
         if context_parts:
             full_instructions = enhanced_instructions + f"\n\nContext about this user:\n\n{chr(10).join(context_parts)}"

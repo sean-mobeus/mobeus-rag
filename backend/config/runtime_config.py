@@ -32,6 +32,31 @@ DEFAULT_CONFIG = {
     "TURN_DETECTION_THRESHOLD": 0.5,
     "TURN_DETECTION_SILENCE_MS": 200,
 
+    # D-ID settings
+    "VIDEO_MODE_ENABLED": False,
+    "DID_USE_AUDIO": False,  # False = text mode (faster), True = audio mode (preserves voice)
+    "DID_VOICE_ID": "en-US-JennyNeural",
+    "DID_VOICE_PROVIDER": "microsoft",
+    "DID_VOICE_STYLE": "Friendly",
+    "DID_EXPRESSION": "neutral",
+    "DID_EXPRESSION_INTENSITY": 1.0,  # Expression intensity (0.0 to 1.0)
+    "DID_STITCH": True,
+    "DID_MAX_POLL_TIME": 20,
+    "DID_POLL_INTERVAL": 0.5,
+    "DID_IDLE_VIDEO_URL": "https://create-images-results.d-id.com/DefaultPresenters/Zivva_f/idle.mp4",  # Replace with actual idle video
+
+    # Video/Avatar settings
+    "VIDEO_PROVIDER": "d-id",
+    "DID_API_BASE_URL": "https://api.d-id.com",
+    "DID_AVATAR_SOURCE_URL": "https://create-images-results.d-id.com/DefaultPresenters/Zivva_f/thumbnail.jpeg",
+    "DID_AVATAR_NAME": "Zivva",
+    "DID_CONNECTION_TIMEOUT": 30,
+    "DID_STREAM_TIMEOUT": 300,
+
+    # Ngrok settings
+    "BACKEND_WEBHOOK_URL": "http://backend:8010",  # Default for internal use
+
+
     "SYSTEM_PROMPT": """You are Mobeus, an AI assistant developed by the Mobeus team. You specialize in helping users with questions about Mobeus products, services, and capabilities.
 
     Key facts about you:

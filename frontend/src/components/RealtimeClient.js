@@ -44,6 +44,7 @@ class RealtimeClient extends EventEmitter {
     this.isRecording = false;
     this._startedRecordingOnce = false;
     this._sessionRecordingOK = false;
+    this.audioEnabled = true;
 
     // Audio playback queue
     this.audioQueue = [];
@@ -640,7 +641,7 @@ class RealtimeClient extends EventEmitter {
 
   /** Queue audio chunk for smooth playback */
   queueAudioChunk(base64Audio) {
-    if (!base64Audio || !this.audioContext) return;
+    if (!base64Audio || !this.audioContext || !this.audioEnabled) return;
 
     try {
       // Decode base64 to get PCM16 data
@@ -688,9 +689,22 @@ class RealtimeClient extends EventEmitter {
       console.error("❌ Failed to queue audio chunk:", error);
     }
   }
+  /** Enable or disable audio playback */
+  setAudioEnabled(enabled) {
+    this.audioEnabled = enabled;
+    console.log(`🔊 Audio playback ${enabled ? "enabled" : "disabled"}`);
+  }
 
   /** Play the next audio chunk in queue - IMPROVED VERSION */
   playNextAudioChunk() {
+    // Skip audio playback if disabled
+    if (!this.audioEnabled) {
+      this.audioQueue = []; // Clear queue
+      this.isPlaying = false;
+      this.nextStartTime = 0; // Reset timing
+      return;
+    }
+
     if (this.audioQueue.length === 0) {
       this.isPlaying = false;
       this.nextStartTime = 0; // Reset timing

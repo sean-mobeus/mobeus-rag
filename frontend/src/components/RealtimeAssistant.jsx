@@ -21,6 +21,11 @@ export default function RealtimeAssistant() {
   const [strategySource, setStrategySource] = useState("default");
   const [showMessages, setShowMessages] = useState(true);
   const [toast, setToast] = useState(null);
+  // Video state
+  const [videoUrl, setVideoUrl] = useState(null);
+  const [videoMode, setVideoMode] = useState(false);
+  const [videoLatency, setVideoLatency] = useState(null);
+  const [didMode, setDidMode] = useState("text"); // 'text' or 'audio'
 
   // User state
   const [userName, setUserName] = useState(
@@ -42,6 +47,9 @@ export default function RealtimeAssistant() {
   const audioContextRef = useRef(null);
   const animationRef = useRef(null);
   const clientRef = useRef(webSocketRealtimeClient);
+  const videoRef = useRef(null);
+  const videoModeRef = useRef(videoMode);
+  const didModeRef = useRef(didMode);
 
   // Auto-scroll to bottom
   const scrollToBottom = () => {
@@ -58,6 +66,30 @@ export default function RealtimeAssistant() {
   useEffect(() => {
     localStorage.setItem("userName", userName);
   }, [userName]);
+
+  useEffect(() => {
+    videoModeRef.current = videoMode;
+  }, [videoMode]);
+
+  useEffect(() => {
+    didModeRef.current = didMode;
+  }, [didMode]);
+
+  useEffect(() => {
+    if (videoMode && !videoUrl) {
+      // Show a placeholder or loading state immediately
+      setVideoUrl("loading"); // Special value to show overlay
+    } else if (!videoMode) {
+      // Clear video when video mode is disabled
+      setVideoUrl(null);
+    }
+  }, [videoMode]);
+
+  useEffect(() => {
+    if (webSocketRealtimeClient) {
+      webSocketRealtimeClient.setAudioEnabled(!videoMode);
+    }
+  }, [videoMode]);
 
   // Initialize client and event listeners
   useEffect(() => {
@@ -76,6 +108,8 @@ export default function RealtimeAssistant() {
     client.on("response.audio.done", handleAudioDone);
     client.on("strategy_updated", handleStrategyUpdated);
     client.on("strategy_update_broadcast", handleStrategyUpdateBroadcast);
+    client.on("did_talk_generated", handleDidTalkGenerated);
+    client.on("did_talk_error", handleDidTalkError);
 
     // Cleanup on unmount
     return () => {
@@ -108,6 +142,18 @@ export default function RealtimeAssistant() {
     }
   };
 
+  const handleDidTalkGenerated = (event) => {
+    console.log("🎬 D-ID video received:", event);
+    setVideoUrl(event.video_url);
+    setVideoLatency(event.latency);
+    // Video will autoplay when set
+  };
+
+  const handleDidTalkError = (event) => {
+    console.error("❌ D-ID video error:", event);
+    showToast(`Video generation failed: ${event.error}`, "error");
+  };
+
   const handleStrategyUpdateBroadcast = (event) => {
     console.log("📡 Strategy broadcast received:", event);
     // This is handled the same as regular strategy updates
@@ -130,6 +176,19 @@ export default function RealtimeAssistant() {
     }
 
     setListening(true);
+
+    // Send current video mode preference using ref value
+    if (videoModeRef.current) {
+      console.log("🎬 Sending initial video mode preference:", {
+        enabled: videoModeRef.current,
+        audio_mode: didModeRef.current,
+      });
+      webSocketRealtimeClient.sendEvent({
+        type: "update_video_mode",
+        enabled: videoModeRef.current,
+        audio_mode: didModeRef.current,
+      });
+    }
 
     try {
       const resMem = await fetch(
@@ -217,7 +276,12 @@ export default function RealtimeAssistant() {
 
   const handleSpeechStarted = () => {
     console.log("🎤 User speech started - interrupting assistant");
-
+    // Interrupt video if playing
+    if (videoRef.current && videoUrl) {
+      videoRef.current.pause();
+      setVideoUrl(null);
+      console.log("🎬 Video interrupted");
+    }
     // Immediately stop speaking and show interruption feedback
     if (speaking) {
       setSpeaking(false);
@@ -458,14 +522,11 @@ export default function RealtimeAssistant() {
     );
     if (!info) return;
     try {
-      const res = await fetch(
-        `${BACKEND_BASE_URL}/memory/summary`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ uuid: userUuid, info }),
-        }
-      );
+      const res = await fetch(`${BACKEND_BASE_URL}/memory/summary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ uuid: userUuid, info }),
+      });
       if (!res.ok) {
         const errText = await res.text();
         throw new Error(`Status ${res.status}: ${errText}`);
@@ -539,7 +600,7 @@ export default function RealtimeAssistant() {
       {/* Main Content */}
       <div className="flex-1 flex max-w-6xl mx-auto w-full">
         {/* Left Side - User Messages */}
-        {showMessages && (
+        {showMessages && !videoMode && (
           <div className="flex-1 p-4">
             <div className="h-full flex flex-col">
               <h2 className="text-sm font-medium text-gray-600 mb-3">You</h2>
@@ -563,7 +624,6 @@ export default function RealtimeAssistant() {
             </div>
           </div>
         )}
-
 
         {/* Center - Microphone & Controls */}
         <div className="w-64 flex flex-col items-center justify-center p-4 bg-white border-x border-gray-200">
@@ -593,6 +653,89 @@ export default function RealtimeAssistant() {
                 <path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2" />
               </svg>
             </button>
+            {/* Video Mode Toggle */}
+            <button
+              onClick={() => {
+                const newMode = !videoMode;
+                setVideoMode(newMode);
+
+                console.log("🎬 Video toggle clicked:", {
+                  connected,
+                  newMode,
+                  didMode,
+                  clientAvailable: !!webSocketRealtimeClient,
+                });
+
+                // Send mode to backend
+                if (connected) {
+                  webSocketRealtimeClient.sendEvent({
+                    type: "update_video_mode",
+                    enabled: newMode,
+                    audio_mode: didMode, // Also send whether to use audio or text
+                  });
+                } else {
+                  console.log("❌ Not connected, can't send update");
+                }
+              }}
+              className={`p-2 rounded-full transition-colors ${
+                videoMode
+                  ? "text-blue-500 bg-blue-50"
+                  : "text-gray-500 hover:text-blue-500 hover:bg-blue-50"
+              }`}
+              title={videoMode ? "Disable video mode" : "Enable video mode"}
+            >
+              <svg
+                width="16"
+                height="16"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+              >
+                <polygon points="23 7 16 12 23 17 23 7"></polygon>
+                <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+              </svg>
+            </button>
+            {/* D-ID Mode Toggle (only show when video mode is on) */}
+            {videoMode && (
+              <button
+                onClick={() => {
+                  const newDidMode = didMode === "text" ? "audio" : "text";
+                  setDidMode(newDidMode);
+
+                  console.log("🎬 Sending video mode update:", {
+                    enabled: videoMode,
+                    audio_mode: newDidMode,
+                  });
+
+                  // Update backend
+                  if (connected) {
+                    webSocketRealtimeClient.sendEvent({
+                      type: "update_video_mode",
+                      enabled: videoMode,
+                      audio_mode: newDidMode,
+                    });
+                  }
+
+                  showToast(
+                    `Video mode: ${
+                      newDidMode === "text"
+                        ? "Fast (text)"
+                        : "Voice preserved (audio)"
+                    }`,
+                    "info"
+                  );
+                }}
+                className="p-2 rounded-full text-gray-500 hover:text-purple-500 hover:bg-purple-50 transition-colors"
+                title={`Current: ${
+                  didMode === "text"
+                    ? "Fast text mode"
+                    : "Audio mode (preserves voice)"
+                }`}
+              >
+                {didMode === "text" ? "T" : "A"}
+              </button>
+            )}
 
             <button
               onClick={handleAppendSummary}
@@ -724,7 +867,7 @@ export default function RealtimeAssistant() {
         </div>
 
         {/* Right Side - Assistant Messages */}
-        {showMessages && (
+        {showMessages && !videoMode && (
           <div className="flex-1 p-4">
             <div className="h-full flex flex-col">
               <h2 className="text-sm font-medium text-gray-600 mb-3">
@@ -765,6 +908,137 @@ export default function RealtimeAssistant() {
                 {/* Auto-scroll target */}
                 <div ref={messagesEndRef} />
               </div>
+            </div>
+          </div>
+        )}
+        {/* {/* Video Overlay */}
+        {videoMode && (videoUrl || videoMode) && (
+          <div
+            style={{
+              position: "fixed",
+              top: 0,
+              left: 0,
+              width: "100vw",
+              height: "100vh",
+              backgroundColor: "black",
+              display: "flex",
+              flexDirection: "column",
+              alignItems: "center",
+              justifyContent: "center",
+              zIndex: 100,
+            }}
+          >
+            {videoUrl && videoUrl !== "loading" ? (
+              <video
+                ref={videoRef}
+                src={videoUrl}
+                autoPlay
+                onEnded={() => {
+                  console.log("🎬 Video ended");
+                  setVideoUrl("loading"); // Back to loading state
+                }}
+                onError={(e) => {
+                  console.error("🎬 Video error:", e);
+                  setVideoUrl("loading"); // Back to loading state
+                }}
+                style={{
+                  width: "100%",
+                  height: "100%",
+                  objectFit: "cover",
+                }}
+              />
+            ) : (
+              <div style={{ color: "white", fontSize: "24px" }}>
+                <div className="animate-pulse">Preparing avatar...</div>
+              </div>
+            )}
+
+            {/* Control Bar */}
+            <div
+              style={{
+                position: "absolute",
+                bottom: 0,
+                left: 0,
+                right: 0,
+                padding: "20px",
+                background:
+                  "linear-gradient(to top, rgba(0,0,0,0.8), transparent)",
+                display: "flex",
+                justifyContent: "center",
+                alignItems: "center",
+                gap: "20px",
+              }}
+            >
+              {/* Microphone Button */}
+              <button
+                onClick={toggleConnection}
+                disabled={connecting}
+                className={`relative w-16 h-16 rounded-full flex items-center justify-center transition-all duration-300 border-2 ${
+                  connecting
+                    ? "bg-yellow-500 border-yellow-600 cursor-wait"
+                    : connected
+                    ? listening
+                      ? "bg-green-500 border-green-600 shadow-lg scale-105"
+                      : speaking
+                      ? "bg-blue-500 border-blue-600 shadow-lg"
+                      : "bg-gray-700 border-gray-600 hover:bg-gray-600"
+                    : "bg-gray-700 border-gray-600 hover:bg-gray-600"
+                }`}
+              >
+                <svg
+                  width="24"
+                  height="24"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="white"
+                  strokeWidth="2"
+                >
+                  <path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" />
+                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                  <line x1="12" x2="12" y1="19" y2="22" />
+                </svg>
+              </button>
+
+              {/* Video toggle */}
+              <button
+                onClick={() => {
+                  const newMode = !videoMode;
+                  setVideoMode(newMode);
+                  // ... rest of toggle logic
+                }}
+                className="p-3 rounded-full bg-gray-700 hover:bg-gray-600 text-white"
+              >
+                <svg
+                  width="20"
+                  height="20"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
+                >
+                  <polygon points="23 7 16 12 23 17 23 7"></polygon>
+                  <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+                </svg>
+              </button>
+
+              {/* Mode toggle */}
+              <button
+                onClick={() => {
+                  const newDidMode = didMode === "text" ? "audio" : "text";
+                  setDidMode(newDidMode);
+                  // ... rest of mode toggle logic
+                }}
+                className="px-4 py-2 rounded-full bg-gray-700 hover:bg-gray-600 text-white text-sm"
+              >
+                {didMode === "text" ? "Text Mode" : "Audio Mode"}
+              </button>
+
+              {/* Latency display */}
+              {videoLatency && (
+                <div className="text-white text-sm">
+                  Latency: {videoLatency.toFixed(2)}s
+                </div>
+              )}
             </div>
           </div>
         )}
