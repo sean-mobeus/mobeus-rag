@@ -25,6 +25,9 @@ export default function RealtimeAssistant() {
   const [videoUrl, setVideoUrl] = useState(null);
   const [videoMode, setVideoMode] = useState(false);
   const [videoLatency, setVideoLatency] = useState(null);
+  const [videoWebSocket, setVideoWebSocket] = useState(null);
+  const [peerConnection, setPeerConnection] = useState(null);
+  const [remoteStream, setRemoteStream] = useState(null);
 
   // User state
   const [userName, setUserName] = useState(
@@ -572,6 +575,118 @@ export default function RealtimeAssistant() {
         ? "bg-green-500"
         : "bg-blue-500";
 
+    const createVideoStream = async () => {
+      try {
+        // Create WebSocket connection for video coordination
+        const ws = new WebSocket(
+          `${BACKEND_BASE_URL.replace(
+            "http",
+            "ws"
+          )}/video/stream?user_uuid=${userUuid}`
+        );
+
+        ws.onopen = () => {
+          console.log("🎬 Video WebSocket connected");
+          // Request stream creation
+          ws.send(JSON.stringify({ type: "create_stream" }));
+        };
+
+        ws.onmessage = async (event) => {
+          const message = JSON.parse(event.data);
+
+          if (message.type === "stream_created") {
+            console.log("🎬 Stream created, setting up WebRTC");
+
+            // Create peer connection
+            const pc = new RTCPeerConnection({
+              iceServers: message.ice_servers,
+            });
+
+            // Handle incoming tracks (video/audio from D-ID)
+            pc.ontrack = (event) => {
+              console.log("🎬 Received remote track:", event.track.kind);
+              if (event.streams && event.streams[0]) {
+                setRemoteStream(event.streams[0]);
+                // Set video source
+                if (videoRef.current) {
+                  videoRef.current.srcObject = event.streams[0];
+                }
+              }
+            };
+
+            // Handle ICE candidates
+            pc.onicecandidate = (event) => {
+              if (event.candidate) {
+                ws.send(
+                  JSON.stringify({
+                    type: "ice_candidate",
+                    candidate: {
+                      candidate: event.candidate.candidate,
+                      sdpMid: event.candidate.sdpMid,
+                      sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    },
+                  })
+                );
+              }
+            };
+
+            // Set remote description (D-ID's offer)
+            await pc.setRemoteDescription(
+              new RTCSessionDescription({
+                type: message.offer.type,
+                sdp: message.offer.sdp,
+              })
+            );
+
+            // Create and send answer
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+
+            // D-ID already has our answer from the create_stream call
+
+            setPeerConnection(pc);
+            setVideoUrl("webrtc"); // Special value to indicate WebRTC stream
+          }
+
+          if (message.type === "did_talk_generated") {
+            console.log(
+              "🎬 D-ID talk generated with latency:",
+              message.latency
+            );
+            setVideoLatency(message.latency);
+          }
+        };
+
+        ws.onerror = (error) => {
+          console.error("❌ Video WebSocket error:", error);
+          showToast("Video connection error", "error");
+        };
+
+        ws.onclose = () => {
+          console.log("🔌 Video WebSocket closed");
+          cleanupVideoStream();
+        };
+
+        setVideoWebSocket(ws);
+      } catch (error) {
+        console.error("❌ Failed to create video stream:", error);
+        showToast("Failed to start video", "error");
+      }
+    };
+
+    const cleanupVideoStream = () => {
+      if (peerConnection) {
+        peerConnection.close();
+        setPeerConnection(null);
+      }
+      if (videoWebSocket) {
+        videoWebSocket.close();
+        setVideoWebSocket(null);
+      }
+      setRemoteStream(null);
+      setVideoUrl(null);
+    };
+
     return (
       <div
         className={`fixed top-4 right-4 ${bgColor} text-white px-4 py-2 rounded-lg shadow-lg z-50 transition-all duration-300`}
@@ -826,7 +941,7 @@ export default function RealtimeAssistant() {
             </div>
           </div>
         )}
-        {/* {/* Video Overlay */}
+        {/* Video Overlay */}
         {videoMode && (videoUrl || videoMode) && (
           <div
             style={{
@@ -844,24 +959,40 @@ export default function RealtimeAssistant() {
             }}
           >
             {videoUrl && videoUrl !== "loading" ? (
-              <video
-                ref={videoRef}
-                src={videoUrl}
-                autoPlay
-                onEnded={() => {
-                  console.log("🎬 Video ended");
-                  setVideoUrl("loading"); // Back to loading state
-                }}
-                onError={(e) => {
-                  console.error("🎬 Video error:", e);
-                  setVideoUrl("loading"); // Back to loading state
-                }}
-                style={{
-                  width: "100%",
-                  height: "100%",
-                  objectFit: "cover",
-                }}
-              />
+              videoUrl === "webrtc" ? (
+                // Use WebRTC video element
+                <video
+                  ref={videoRef}
+                  autoPlay
+                  playsInline
+                  muted={false}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              ) : (
+                // Keep existing video element for non-WebRTC
+                <video
+                  ref={videoRef}
+                  src={videoUrl}
+                  autoPlay
+                  onEnded={() => {
+                    console.log("🎬 Video ended");
+                    setVideoUrl("loading");
+                  }}
+                  onError={(e) => {
+                    console.error("🎬 Video error:", e);
+                    setVideoUrl("loading");
+                  }}
+                  style={{
+                    width: "100%",
+                    height: "100%",
+                    objectFit: "cover",
+                  }}
+                />
+              )
             ) : (
               <div style={{ color: "white", fontSize: "24px" }}>
                 <div className="animate-pulse">Preparing avatar...</div>
@@ -919,7 +1050,17 @@ export default function RealtimeAssistant() {
                 onClick={() => {
                   const newMode = !videoMode;
                   setVideoMode(newMode);
-                  // ... rest of toggle logic
+                  if (newMode) {
+                    createVideoStream(); // Start video stream
+                  } else {
+                    cleanupVideoStream(); // Stop video stream
+                  }
+                  // Send mode update to backend
+                  webSocketRealtimeClient.sendEvent({
+                    type: "update_video_mode",
+                    enabled: newMode,
+                    audio_mode: didMode,
+                  });
                 }}
                 className="p-3 rounded-full bg-gray-700 hover:bg-gray-600 text-white"
               >

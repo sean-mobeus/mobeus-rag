@@ -6,7 +6,10 @@ Defines interfaces and factory for video provider implementations.
 
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
-
+from video.did_streaming_client import DIDStreamingClient
+import os
+import asyncio
+from datetime import datetime
 import config.runtime_config as runtime_config
 
 
@@ -65,23 +68,70 @@ def get_video_processor(provider_name: Optional[str] = None) -> BaseVideoProcess
 
 
 class DIdVideoProcessor(BaseVideoProcessor):
+    def __init__(self):
+        api_key = os.getenv("DID_API_KEY")
+        if not api_key:
+            raise ValueError("DID_API_KEY environment variable is required")
+        self.client = DIDStreamingClient(api_key)
+        self.active_streams = {}  # track stream metadata
+        
     async def create_stream(self, source_url: str) -> Dict[str, Any]:
-        raise NotImplementedError("D-ID video create_stream not implemented")
+        """Create D-ID stream and return connection info"""
+        result = await self.client.create_stream(source_url)
+        
+        # Store stream metadata
+        self.active_streams[result["stream_id"]] = {
+            "session_id": result["session_id"],
+            "created_at": datetime.now()
+        }
+        
+        # Start ICE gathering
+        asyncio.create_task(self.client.handle_ice_gathering(result["stream_id"]))
+        
+        return {
+            "id": result["stream_id"],
+            "session_id": result["session_id"],
+            "offer": result["answer"],  # We send our answer as the "offer" to frontend
+            "ice_servers": result["ice_servers"]
+        }
 
     async def send_sdp_answer(
         self, stream_id: str, session_id: str, answer: str
     ) -> Dict[str, Any]:
-        raise NotImplementedError("D-ID video send_sdp_answer not implemented")
+        """For D-ID streaming, this is already handled in create_stream"""
+        # Since we handle the SDP exchange in create_stream, this is a no-op
+        return {"status": "ok"}
 
     async def send_ice_candidate(
         self, stream_id: str, session_id: str, candidate: Dict[str, Any]
     ) -> None:
-        raise NotImplementedError("D-ID video send_ice_candidate not implemented")
+        """Forward ICE candidates from frontend to D-ID"""
+        await self.client.send_ice_candidate(stream_id, candidate)
 
     async def create_talk(
         self, stream_id: str, session_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        raise NotImplementedError("D-ID video create_talk not implemented")
+        """Send text to D-ID for avatar speech generation"""
+        text = payload.get("text")
+        if not text:
+            raise ValueError("Text is required for talk creation")
+            
+        voice_settings = payload.get("config", {}).get("voice", {})
+        result = await self.client.send_text(stream_id, text, voice_settings)
+        
+        if not result:
+            raise ValueError("No response received from send_text")
+        
+        return {
+            "status": "ok",
+            "talk_id": result.get("id"),
+            "duration": result.get("duration")
+        }
 
     async def close_stream(self, stream_id: str, session_id: str) -> None:
-        raise NotImplementedError("D-ID video close_stream not implemented")
+        """Close D-ID stream"""
+        await self.client.close_stream(stream_id)
+        
+        # Clean up metadata
+        if stream_id in self.active_streams:
+            del self.active_streams[stream_id]
