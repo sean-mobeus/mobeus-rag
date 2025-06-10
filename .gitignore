@@ -2,6 +2,7 @@ __pycache__/
 .env
 chroma/
 logs/*.jsonl
+.venv/
 
 debug_log.jsonl
 rag_debug_fresh.jsonl
